@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hans">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Weaving Type</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="style.css" />
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/addons/p5.dom.min.js"></script>
@@ -50,7 +56,8 @@
         <input id="sag-slider" type="range" min="0" max="1" step="0.05" value="0.5" />
         <span id="sag-value">0.50</span>
       </label>
-      <p class="hint">Type in the box or on the canvas. Enter starts a new line. Text wraps like a paragraph.</p>
+      <button type="button" id="download-svg">Download SVG</button>
+      <p class="hint">Supports English and Chinese. Use the text box for Chinese input (IME). Enter starts a new line.</p>
     </div>
   </body>
 </html>

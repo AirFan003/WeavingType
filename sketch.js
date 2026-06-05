@@ -19,11 +19,17 @@ let edgeJitter = 0.45;
 let threadSag = 0.5;
 
 let textInput;
+let isComposing = false;
+let fullFontLoading = false;
+
+const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
+const FONT_FAST =
+  'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff';
+const FONT_FULL =
+  'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf';
 
 function preload() {
-  font = loadFont(
-    'https://cdn.jsdelivr.net/fontsource/fonts/roboto-mono@latest/latin-700-normal.ttf'
-  );
+  font = loadFont(FONT_FAST);
 }
 
 function setup() {
@@ -34,16 +40,47 @@ function setup() {
   stroke(255);
   noFill();
 
-  gLineHeight = gTextSize * 1.15;
-  gParagraphGap = gTextSize * 0.35;
+  gLineHeight = gTextSize * 1.0;
+  gParagraphGap = gTextSize * 0.15;
 
   bindControls();
+  text = textInput.value();
   rebuildLayout();
+  loadFullFont();
+}
+
+function loadFullFont() {
+  fullFontLoading = true;
+  loadFont(
+    FONT_FULL,
+    (loadedFont) => {
+      font = loadedFont;
+      fullFontLoading = false;
+      rebuildLayout();
+    },
+    (error) => {
+      fullFontLoading = false;
+      console.warn('Extended font unavailable, using subset font.', error);
+    }
+  );
 }
 
 function bindControls() {
   textInput = select('#text-input');
+
+  textInput.elt.addEventListener('compositionstart', () => {
+    isComposing = true;
+  });
+  textInput.elt.addEventListener('compositionend', () => {
+    isComposing = false;
+    text = textInput.value();
+    rebuildLayout();
+  });
+
   textInput.input(() => {
+    if (isComposing) {
+      return;
+    }
     text = textInput.value();
     rebuildLayout();
   });
@@ -69,6 +106,8 @@ function bindControls() {
   bindSlider('sag-slider', 'sag-value', (v) => {
     threadSag = v;
   });
+
+  select('#download-svg').mousePressed(downloadSvg);
 }
 
 function bindSlider(sliderId, labelId, onChange) {
@@ -85,57 +124,96 @@ function bindSlider(sliderId, labelId, onChange) {
   update();
 }
 
+function hasCJK(value) {
+  return CJK_REGEX.test(value);
+}
+
+function lineWidth(value) {
+  return font.textBounds(value, 0, 0, gTextSize).w;
+}
+
+function wrapParagraphByCharacters(paragraph, maxWidth) {
+  let lines = [];
+  let currentLine = '';
+
+  for (let char of paragraph) {
+    let trial = currentLine + char;
+
+    if (lineWidth(trial) > maxWidth && currentLine !== '') {
+      lines.push(currentLine);
+      currentLine = char;
+    } else {
+      currentLine = trial;
+    }
+  }
+
+  if (currentLine !== '') {
+    lines.push(currentLine);
+  }
+
+  return lines;
+}
+
+function wrapParagraphByWords(paragraph, maxWidth) {
+  let lines = [];
+  let currentLine = '';
+  let words = paragraph.split(/(\s+)/);
+
+  for (let word of words) {
+    if (word === '') continue;
+
+    let trial = currentLine + word;
+
+    if (lineWidth(trial) > maxWidth && currentLine !== '') {
+      lines.push(currentLine);
+      currentLine = word.trimStart();
+    } else {
+      currentLine = trial;
+    }
+  }
+
+  if (currentLine !== '') {
+    lines.push(currentLine);
+  }
+
+  return lines;
+}
+
+function wrapParagraph(paragraph, maxWidth) {
+  if (hasCJK(paragraph)) {
+    return wrapParagraphByCharacters(paragraph, maxWidth);
+  }
+  return wrapParagraphByWords(paragraph, maxWidth);
+}
+
 function rebuildLayout() {
   gLines = [];
 
-  if (!text) {
+  if (!text || !font) {
     return;
   }
 
-  let ascender = font.textBounds('Hg', 0, 0, gTextSize).h;
+  let latinAscender = font.textBounds('Hg', 0, 0, gTextSize).h;
+  let cjkAscender = font.textBounds('中', 0, 0, gTextSize).h;
+  let ascender = max(latinAscender, cjkAscender);
   let maxWidth = width - gMargin * 2;
   let paragraphs = text.split('\n');
   let laidOut = [];
 
-  for (let p = 0; p < paragraphs.length; p++) {
-    let paragraph = paragraphs[p];
-
+  for (let paragraph of paragraphs) {
     if (paragraph === '') {
       laidOut.push({ text: '', blank: true });
       continue;
     }
 
-    let currentLine = '';
-    let words = paragraph.split(/(\s+)/);
-
-    for (let word of words) {
-      if (word === '') continue;
-
-      let trial = currentLine + word;
-      let trialWidth = font.textBounds(trial, 0, 0, gTextSize).w;
-
-      if (trialWidth > maxWidth && currentLine !== '') {
-        laidOut.push({ text: currentLine, blank: false });
-        currentLine = word.trimStart();
-      } else {
-        currentLine = trial;
-      }
-    }
-
-    if (currentLine !== '') {
-      laidOut.push({ text: currentLine, blank: false });
-    }
-
-    if (p < paragraphs.length - 1) {
-      laidOut.push({ text: '', paragraphBreak: true });
+    for (let line of wrapParagraph(paragraph, maxWidth)) {
+      laidOut.push({ text: line, blank: false });
     }
   }
 
   let contentHeight = 0;
   for (let entry of laidOut) {
     if (entry.blank) {
-      contentHeight += gLineHeight;
-    } else if (entry.paragraphBreak) {
       contentHeight += gParagraphGap;
     } else {
       contentHeight += gLineHeight;
@@ -146,11 +224,6 @@ function rebuildLayout() {
 
   for (let entry of laidOut) {
     if (entry.blank) {
-      y += gLineHeight;
-      continue;
-    }
-
-    if (entry.paragraphBreak) {
       y += gParagraphGap;
       continue;
     }
@@ -163,6 +236,11 @@ function rebuildLayout() {
 function draw() {
   background(0);
 
+  if (!font) {
+    drawStatusMessage('Loading font…');
+    return;
+  }
+
   for (let i = 0; i < lineLayers; i++) {
     let threshold = gTextSize * (lineSpacing + layerStep * i);
 
@@ -171,6 +249,14 @@ function draw() {
       line.draw(i);
     }
   }
+}
+
+function drawStatusMessage(message) {
+  fill(255);
+  noStroke();
+  textAlign(CENTER, CENTER);
+  textSize(18);
+  text(message, width / 2, height / 2);
 }
 
 function keyPressed() {
@@ -210,10 +296,11 @@ class TextLine {
     this.chars = [];
     let xp = startX;
 
-    for (let i = 0; i < text.length; i++) {
-      let c = text.charAt(i);
-      this.chars.push({ c, xp, yp, index: i });
+    let index = 0;
+    for (let c of text) {
+      this.chars.push({ c, xp, yp, index });
       xp += font.textBounds(c, 0, 0, gTextSize).w;
+      index++;
     }
 
     this.rowSegments = [];
@@ -322,7 +409,7 @@ function buildStitchPairs(segment, layerSalt) {
   return pairs;
 }
 
-function drawCurvedThread(a, b, layerSalt) {
+function computeThreadGeometry(a, b, layerSalt) {
   let jitterAmt = edgeJitter * gTextSize * 0.018;
   let sagAmt = threadSag * gTextSize * 0.035;
 
@@ -347,19 +434,111 @@ function drawCurvedThread(a, b, layerSalt) {
   let perpY = nx;
   let sway = (threadRandom(midX, midY, layerSalt + 7.4) - 0.5) * jitterAmt * 0.8;
   let droop = sagAmt * (0.35 + threadRandom(midX, midY, layerSalt + 8.2) * 0.65);
-  let ctrlX = midX + perpX * sway;
-  let ctrlY = midY + droop + abs(dx) * 0.03;
 
-  let weight = strokeW * (0.55 + threadRandom(a.x, a.y, layerSalt + 9.3) * 0.9);
-  let alpha = 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160);
+  return {
+    start,
+    ctrl: {
+      x: midX + perpX * sway,
+      y: midY + droop + abs(dx) * 0.03,
+    },
+    end,
+    weight: strokeW * (0.55 + threadRandom(a.x, a.y, layerSalt + 9.3) * 0.9),
+    alpha: 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160),
+  };
+}
 
-  stroke(255, alpha);
-  strokeWeight(weight);
+function drawCurvedThread(a, b, layerSalt) {
+  let thread = computeThreadGeometry(a, b, layerSalt);
+
+  stroke(255, thread.alpha);
+  strokeWeight(thread.weight);
   noFill();
   beginShape();
-  vertex(start.x, start.y);
-  quadraticVertex(ctrlX, ctrlY, end.x, end.y);
+  vertex(thread.start.x, thread.start.y);
+  quadraticVertex(thread.ctrl.x, thread.ctrl.y, thread.end.x, thread.end.y);
   endShape();
+}
+
+function svgNumber(value) {
+  return value.toFixed(2);
+}
+
+function threadToSvgPath(thread) {
+  let opacity = (thread.alpha / 255).toFixed(3);
+  return (
+    `<path d="M ${svgNumber(thread.start.x)} ${svgNumber(thread.start.y)} ` +
+    `Q ${svgNumber(thread.ctrl.x)} ${svgNumber(thread.ctrl.y)} ` +
+    `${svgNumber(thread.end.x)} ${svgNumber(thread.end.y)}" ` +
+    `fill="none" stroke="#ffffff" stroke-width="${svgNumber(thread.weight)}" ` +
+    `stroke-opacity="${opacity}" stroke-linecap="round"/>`
+  );
+}
+
+function collectSvgPaths() {
+  let paths = [];
+
+  for (let i = 0; i < lineLayers; i++) {
+    let threshold = gTextSize * (lineSpacing + layerStep * i);
+
+    for (let line of gLines) {
+      line.update(sampleDensity, threshold);
+
+      for (let segment of line.rowSegments) {
+        let layerSalt = i * 17.11;
+        let pairs = buildStitchPairs(segment, layerSalt);
+
+        for (let pair of pairs) {
+          let thread = computeThreadGeometry(
+            pair[0],
+            pair[1],
+            layerSalt + pair[0].charIndex * 0.31
+          );
+          paths.push(threadToSvgPath(thread));
+        }
+      }
+    }
+  }
+
+  return paths;
+}
+
+function makeSvgFilename() {
+  let slug = text
+    .trim()
+    .slice(0, 30)
+    .replace(/[^\w\u4e00-\u9fff-]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return `weaving-${slug || 'type'}.svg`;
+}
+
+function buildSvgDocument() {
+  let paths = collectSvgPaths();
+
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
+    '  <rect width="100%" height="100%" fill="#000000"/>\n' +
+    `  ${paths.join('\n  ')}\n` +
+    '</svg>'
+  );
+}
+
+function downloadSvg() {
+  if (!font || gLines.length === 0) {
+    return;
+  }
+
+  let svg = buildSvgDocument();
+  let blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  let url = URL.createObjectURL(blob);
+  let anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = makeSvgFilename();
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function drawWeaveSegment(segment, layerIndex) {

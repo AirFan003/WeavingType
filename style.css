@@ -50,7 +50,7 @@ body {
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
-  font-family: ui-monospace, monospace;
+  font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   resize: vertical;
   line-height: 1.4;
 }
@@ -62,6 +62,26 @@ body {
 
 input[type='range'] {
   width: 120px;
+}
+
+#download-svg {
+  padding: 7px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#download-svg:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+#download-svg:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .hint {
