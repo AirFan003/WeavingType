@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weaving Type</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/addons/p5.dom.min.js"></script>
+    <script src="sketch.js"></script>
+  </head>
+  <body>
+    <div id="controls">
+      <label class="text-label">
+        Text
+        <textarea id="text-input" rows="2" spellcheck="false">threading</textarea>
+      </label>
+      <label>
+        Sample density
+        <input id="density-slider" type="range" min="0.02" max="0.35" step="0.01" value="0.1" />
+        <span id="density-value">0.10</span>
+      </label>
+      <label>
+        Line layers
+        <input id="layers-slider" type="range" min="1" max="20" step="1" value="10" />
+        <span id="layers-value">10</span>
+      </label>
+      <label>
+        Line spacing
+        <input id="spacing-slider" type="range" min="0.02" max="0.12" step="0.005" value="0.05" />
+        <span id="spacing-value">0.05</span>
+      </label>
+      <label>
+        Layer step
+        <input id="step-slider" type="range" min="0.002" max="0.03" step="0.001" value="0.01" />
+        <span id="step-value">0.01</span>
+      </label>
+      <label>
+        Stroke weight
+        <input id="stroke-slider" type="range" min="0.1" max="2" step="0.1" value="0.5" />
+        <span id="stroke-value">0.5</span>
+      </label>
+      <label>
+        Edge jitter
+        <input id="jitter-slider" type="range" min="0" max="1" step="0.05" value="0.45" />
+        <span id="jitter-value">0.45</span>
+      </label>
+      <label>
+        Thread sag
+        <input id="sag-slider" type="range" min="0" max="1" step="0.05" value="0.5" />
+        <span id="sag-value">0.50</span>
+      </label>
+      <p class="hint">Type in the box or on the canvas. Enter starts a new line. Text wraps like a paragraph.</p>
+    </div>
+  </body>
+</html>
