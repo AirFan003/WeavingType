@@ -2,7 +2,8 @@
 // https://genuary.art/prompts#jan20
 // Interactive version: editable text + line density controls
 
-let font;
+let fontEnglish;
+let fontChinese;
 let text = 'threading';
 let gTextSize = 250;
 let gMargin = 48;
@@ -16,20 +17,61 @@ let lineSpacing = 0.05;
 let layerStep = 0.01;
 let strokeW = 0.5;
 let edgeJitter = 0.45;
-let threadSag = 0.5;
+let withinThreadSag = 0.5;
+let gapsThreadSag = 0.5;
+
+const MASK_SAMPLE_RADIUS = 3;
+const MASK_BRIGHTNESS_THRESHOLD = 4;
+const BODY_SAMPLE_COUNT = 5;
+const BODY_INSIDE_MIN_RATIO = 0.34;
+const SAG_AMOUNT_SCALE = 0.06;
+let withinLetterDensity = 1;
+let betweenLetterDensity = 1;
+let letterSpacing = 0.065;
+let colorMode = 'monotone';
+let backgroundColor = '#0c0b0a';
+let paletteColors = ['#e8dcc8', '#c45c3e', '#6b8f71'];
 
 let textInput;
 let isComposing = false;
-let fullFontLoading = false;
 
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
-const FONT_FAST =
+const FONT_ENGLISH =
+  'https://cdn.jsdelivr.net/gh/adobe-fonts/source-serif@release/VAR/SourceSerif4Variable-Roman.ttf';
+const FONT_CHINESE =
   'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff';
-const FONT_FULL =
+const FONT_CHINESE_FULL =
   'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf';
 
 function preload() {
-  font = loadFont(FONT_FAST);
+  fontEnglish = loadFont(FONT_ENGLISH);
+  fontChinese = loadFont(FONT_CHINESE);
+}
+
+function fontsReady() {
+  return fontEnglish && fontChinese;
+}
+
+function isCjkChar(char) {
+  return CJK_REGEX.test(char);
+}
+
+function fontForChar(char) {
+  return isCjkChar(char) ? fontChinese : fontEnglish;
+}
+
+function englishTrackingAfter() {
+  return gTextSize * letterSpacing;
+}
+
+function charAdvance(char, addTrackingAfter) {
+  let width = fontForChar(char).textBounds(char, 0, 0, gTextSize).w;
+
+  if (addTrackingAfter && !isCjkChar(char)) {
+    width += englishTrackingAfter();
+  }
+
+  return width;
 }
 
 function setup() {
@@ -46,21 +88,18 @@ function setup() {
   bindControls();
   text = textInput.value();
   rebuildLayout();
-  loadFullFont();
+  loadFullChineseFont();
 }
 
-function loadFullFont() {
-  fullFontLoading = true;
+function loadFullChineseFont() {
   loadFont(
-    FONT_FULL,
+    FONT_CHINESE_FULL,
     (loadedFont) => {
-      font = loadedFont;
-      fullFontLoading = false;
+      fontChinese = loadedFont;
       rebuildLayout();
     },
     (error) => {
-      fullFontLoading = false;
-      console.warn('Extended font unavailable, using subset font.', error);
+      console.warn('Extended Chinese font unavailable, using subset font.', error);
     }
   );
 }
@@ -88,6 +127,16 @@ function bindControls() {
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
   });
+  bindSlider('letter-spacing-slider', 'letter-spacing-value', (v) => {
+    letterSpacing = v;
+    rebuildLayout();
+  });
+  bindSlider('within-slider', 'within-value', (v) => {
+    withinLetterDensity = v;
+  });
+  bindSlider('between-slider', 'between-value', (v) => {
+    betweenLetterDensity = v;
+  });
   bindSlider('layers-slider', 'layers-value', (v) => {
     lineLayers = Math.round(v);
   });
@@ -103,11 +152,91 @@ function bindControls() {
   bindSlider('jitter-slider', 'jitter-value', (v) => {
     edgeJitter = v;
   });
-  bindSlider('sag-slider', 'sag-value', (v) => {
-    threadSag = v;
+  bindSlider('within-sag-slider', 'within-sag-value', (v) => {
+    withinThreadSag = v;
+  });
+  bindSlider('gaps-sag-slider', 'gaps-sag-value', (v) => {
+    gapsThreadSag = v;
   });
 
+  bindColorControls();
   select('#download-svg').mousePressed(downloadSvg);
+}
+
+function bindColorControls() {
+  let modeSelect = select('#color-mode');
+  modeSelect.changed(() => {
+    colorMode = modeSelect.value();
+    updateColorControlVisibility();
+  });
+  colorMode = modeSelect.value();
+  updateColorControlVisibility();
+
+  select('#bg-color').input(() => {
+    backgroundColor = select('#bg-color').value();
+  });
+  backgroundColor = select('#bg-color').value();
+
+  for (let i = 1; i <= 3; i++) {
+    let picker = select(`#color-${i}`);
+    let index = i - 1;
+    picker.input(() => {
+      paletteColors[index] = picker.value();
+    });
+    paletteColors[index] = picker.value();
+  }
+}
+
+function updateColorControlVisibility() {
+  let slots = selectAll('.color-label');
+
+  for (let label of slots) {
+    let slot = parseInt(label.attribute('data-color-slot'), 10);
+    let show = false;
+
+    if (colorMode === 'monotone') {
+      show = slot === 0;
+    } else if (colorMode === 'duotone') {
+      show = slot <= 1;
+    } else {
+      show = slot <= 2;
+    }
+
+    if (show) {
+      label.removeClass('is-hidden');
+    } else {
+      label.addClass('is-hidden');
+    }
+  }
+}
+
+function threadStrokeHex(a, b, layerSalt) {
+  if (colorMode === 'monotone') {
+    return paletteColors[0];
+  }
+
+  let paletteSize = colorMode === 'duotone' ? 2 : 3;
+  let colorIndex = floor(threadRandom(a.x, a.y, layerSalt + 21.7) * paletteSize);
+  colorIndex = min(colorIndex, paletteSize - 1);
+
+  return paletteColors[colorIndex];
+}
+
+function hexToRgb(hex) {
+  let normalized = hex.replace('#', '');
+
+  if (normalized.length === 3) {
+    normalized = normalized
+      .split('')
+      .map((char) => char + char)
+      .join('');
+  }
+
+  return {
+    r: parseInt(normalized.slice(0, 2), 16),
+    g: parseInt(normalized.slice(2, 4), 16),
+    b: parseInt(normalized.slice(4, 6), 16),
+  };
 }
 
 function bindSlider(sliderId, labelId, onChange) {
@@ -116,7 +245,13 @@ function bindSlider(sliderId, labelId, onChange) {
 
   let update = () => {
     let value = parseFloat(slider.value());
-    label.html(sliderId === 'layers-slider' ? String(Math.round(value)) : value.toFixed(sliderId === 'step-slider' ? 3 : 2));
+    label.html(
+      sliderId === 'layers-slider'
+        ? String(Math.round(value))
+        : value.toFixed(
+            sliderId === 'step-slider' || sliderId === 'letter-spacing-slider' ? 3 : 2
+          )
+    );
     onChange(value);
   };
 
@@ -129,7 +264,14 @@ function hasCJK(value) {
 }
 
 function lineWidth(value) {
-  return font.textBounds(value, 0, 0, gTextSize).w;
+  let chars = [...value];
+  let widthTotal = 0;
+
+  for (let i = 0; i < chars.length; i++) {
+    widthTotal += charAdvance(chars[i], i < chars.length - 1);
+  }
+
+  return widthTotal;
 }
 
 function wrapParagraphByCharacters(paragraph, maxWidth) {
@@ -189,12 +331,12 @@ function wrapParagraph(paragraph, maxWidth) {
 function rebuildLayout() {
   gLines = [];
 
-  if (!text || !font) {
+  if (!text || !fontsReady()) {
     return;
   }
 
-  let latinAscender = font.textBounds('Hg', 0, 0, gTextSize).h;
-  let cjkAscender = font.textBounds('中', 0, 0, gTextSize).h;
+  let latinAscender = fontEnglish.textBounds('Hg', 0, 0, gTextSize).h;
+  let cjkAscender = fontChinese.textBounds('中', 0, 0, gTextSize).h;
   let ascender = max(latinAscender, cjkAscender);
   let maxWidth = width - gMargin * 2;
   let paragraphs = text.split('\n');
@@ -233,22 +375,94 @@ function rebuildLayout() {
   }
 }
 
-function draw() {
-  background(0);
+function getDensitySettings(density) {
+  let amount = max(density, 0);
 
-  if (!font) {
-    drawStatusMessage('Loading font…');
+  return {
+    layers: amount === 0 ? 0 : max(1, round(lineLayers * amount)),
+    sample: sampleDensity * amount,
+    spacing: lineSpacing / max(amount, 0.2),
+    step: layerStep / max(amount, 0.2),
+  };
+}
+
+function charIndexAtPoint(x, y, masks) {
+  for (let mask of masks) {
+    if (mask.contains(x, y)) {
+      return mask.charIndex;
+    }
+  }
+
+  return null;
+}
+
+function isWithinLetterBody(a, b, line) {
+  let aChar = charIndexAtPoint(a.x, a.y, line.masks);
+  let bChar = charIndexAtPoint(b.x, b.y, line.masks);
+
+  if (aChar === null || bChar === null || aChar !== bChar) {
+    return false;
+  }
+
+  let insideCount = 0;
+
+  for (let i = 0; i < BODY_SAMPLE_COUNT; i++) {
+    let t = i / (BODY_SAMPLE_COUNT - 1);
+    let x = lerp(a.x, b.x, t);
+    let y = lerp(a.y, b.y, t);
+
+    if (charIndexAtPoint(x, y, line.masks) === aChar) {
+      insideCount++;
+    }
+  }
+
+  return insideCount / BODY_SAMPLE_COUNT >= BODY_INSIDE_MIN_RATIO;
+}
+
+function forEachWeaveThread(onThread) {
+  let passes = [
+    { density: withinLetterDensity, saltOffset: 0, within: true },
+    { density: betweenLetterDensity, saltOffset: 1000, within: false },
+  ];
+  for (let pass of passes) {
+    let settings = getDensitySettings(pass.density);
+
+    for (let i = 0; i < settings.layers; i++) {
+      let threshold = gTextSize * (settings.spacing + settings.step * i);
+
+      for (let line of gLines) {
+        line.update(settings.sample, threshold);
+        let layerSalt = pass.saltOffset + i * 17.11;
+
+        for (let segment of line.segments) {
+          let pairs = buildStitchPairs(segment, layerSalt, pass.density);
+
+          for (let pair of pairs) {
+            let inside = isWithinLetterBody(pair[0], pair[1], line);
+            if (inside !== pass.within) {
+              continue;
+            }
+
+            onThread(pair, layerSalt + pair[0].charIndex * 0.31, inside);
+          }
+        }
+      }
+    }
+  }
+}
+
+function draw() {
+  let bg = hexToRgb(backgroundColor);
+  background(bg.r, bg.g, bg.b);
+
+  if (!fontsReady()) {
+    drawStatusMessage('Loading fonts…');
     return;
   }
 
-  for (let i = 0; i < lineLayers; i++) {
-    let threshold = gTextSize * (lineSpacing + layerStep * i);
-
-    for (let line of gLines) {
-      line.update(sampleDensity, threshold);
-      line.draw(i);
-    }
-  }
+  forEachWeaveThread((pair, layerSalt, inside) => {
+    drawCurvedThread(pair[0], pair[1], layerSalt, inside);
+  });
 }
 
 function drawStatusMessage(message) {
@@ -291,26 +505,77 @@ function windowResized() {
   rebuildLayout();
 }
 
+class LetterMask {
+  constructor(char) {
+    this.charIndex = char.index;
+    let bounds = char.font.textBounds(char.c, char.xp, char.yp, gTextSize);
+    let pad = 14;
+
+    this.offsetX = floor(bounds.x) - pad;
+    this.offsetY = floor(bounds.y) - pad;
+    this.maskWidth = ceil(bounds.w) + pad * 2;
+    this.maskHeight = ceil(bounds.h) + pad * 2;
+    this.graphics = createGraphics(this.maskWidth, this.maskHeight);
+
+    this.graphics.pixelDensity(1);
+    this.graphics.background(0);
+    this.graphics.fill(255);
+    this.graphics.noStroke();
+    this.graphics.textFont(char.font);
+    this.graphics.textSize(gTextSize);
+    this.graphics.textAlign(LEFT, BASELINE);
+    this.graphics.text(char.c, char.xp - this.offsetX, char.yp - this.offsetY);
+  }
+
+  contains(x, y) {
+    let localX = floor(x - this.offsetX);
+    let localY = floor(y - this.offsetY);
+
+    for (let oy = -MASK_SAMPLE_RADIUS; oy <= MASK_SAMPLE_RADIUS; oy++) {
+      for (let ox = -MASK_SAMPLE_RADIUS; ox <= MASK_SAMPLE_RADIUS; ox++) {
+        let sampleX = localX + ox;
+        let sampleY = localY + oy;
+
+        if (sampleX < 0 || sampleY < 0 || sampleX >= this.maskWidth || sampleY >= this.maskHeight) {
+          continue;
+        }
+
+        let pixel = this.graphics.get(sampleX, sampleY);
+        if (brightness(pixel) > MASK_BRIGHTNESS_THRESHOLD) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+}
+
 class TextLine {
   constructor(text, startX, yp) {
     this.chars = [];
     let xp = startX;
 
+    let chars = [...text];
     let index = 0;
-    for (let c of text) {
-      this.chars.push({ c, xp, yp, index });
-      xp += font.textBounds(c, 0, 0, gTextSize).w;
+
+    for (let i = 0; i < chars.length; i++) {
+      let c = chars[i];
+      let charFont = fontForChar(c);
+      this.chars.push({ c, xp, yp, index, font: charFont });
+      xp += charAdvance(c, i < chars.length - 1);
       index++;
     }
 
-    this.rowSegments = [];
+    this.masks = this.chars.map((char) => new LetterMask(char));
+    this.segments = [];
   }
 
   update(sample, threshold) {
     let points = [];
 
     for (let char of this.chars) {
-      let charPoints = font.textToPoints(char.c, char.xp, char.yp, gTextSize, {
+      let charPoints = char.font.textToPoints(char.c, char.xp, char.yp, gTextSize, {
         sampleFactor: sample,
         simplifyThreshold: 0,
       });
@@ -328,17 +593,11 @@ class TextLine {
       groups[roundedY].push(pt);
     }
 
-    this.rowSegments = [];
+    this.segments = [];
     for (let row of Object.values(groups)) {
       for (let segment of splitRowIntoSegments(row)) {
-        this.rowSegments.push(segment);
+        this.segments.push(segment);
       }
-    }
-  }
-
-  draw(layerIndex) {
-    for (let segment of this.rowSegments) {
-      drawWeaveSegment(segment, layerIndex);
     }
   }
 }
@@ -385,12 +644,13 @@ function jitterPoint(x, y, amount, salt) {
   };
 }
 
-function buildStitchPairs(segment, layerSalt) {
+function buildStitchPairs(segment, layerSalt, density = 1) {
   let pairs = [];
   let i = 0;
+  let skipChance = 0.1 + (1 - min(density, 1)) * 0.4;
 
   while (i < segment.length) {
-    if (threadRandom(segment[i].x, segment[i].y, layerSalt) < 0.1) {
+    if (threadRandom(segment[i].x, segment[i].y, layerSalt) < skipChance) {
       i++;
       continue;
     }
@@ -409,9 +669,13 @@ function buildStitchPairs(segment, layerSalt) {
   return pairs;
 }
 
-function computeThreadGeometry(a, b, layerSalt) {
+function sagAmountForThread(inside) {
+  return (inside ? withinThreadSag : gapsThreadSag) * gTextSize * SAG_AMOUNT_SCALE;
+}
+
+function computeThreadGeometry(a, b, layerSalt, inside) {
   let jitterAmt = edgeJitter * gTextSize * 0.018;
-  let sagAmt = threadSag * gTextSize * 0.035;
+  let sagAmt = sagAmountForThread(inside);
 
   let start = jitterPoint(a.x, a.y, jitterAmt, layerSalt);
   let end = jitterPoint(b.x, b.y, jitterAmt, layerSalt + 5.2);
@@ -447,10 +711,11 @@ function computeThreadGeometry(a, b, layerSalt) {
   };
 }
 
-function drawCurvedThread(a, b, layerSalt) {
-  let thread = computeThreadGeometry(a, b, layerSalt);
+function drawCurvedThread(a, b, layerSalt, inside) {
+  let thread = computeThreadGeometry(a, b, layerSalt, inside);
+  let strokeRgb = hexToRgb(threadStrokeHex(a, b, layerSalt));
 
-  stroke(255, thread.alpha);
+  stroke(strokeRgb.r, strokeRgb.g, strokeRgb.b, thread.alpha);
   strokeWeight(thread.weight);
   noFill();
   beginShape();
@@ -463,13 +728,13 @@ function svgNumber(value) {
   return value.toFixed(2);
 }
 
-function threadToSvgPath(thread) {
+function threadToSvgPath(thread, strokeHex) {
   let opacity = (thread.alpha / 255).toFixed(3);
   return (
     `<path d="M ${svgNumber(thread.start.x)} ${svgNumber(thread.start.y)} ` +
     `Q ${svgNumber(thread.ctrl.x)} ${svgNumber(thread.ctrl.y)} ` +
     `${svgNumber(thread.end.x)} ${svgNumber(thread.end.y)}" ` +
-    `fill="none" stroke="#ffffff" stroke-width="${svgNumber(thread.weight)}" ` +
+    `fill="none" stroke="${strokeHex}" stroke-width="${svgNumber(thread.weight)}" ` +
     `stroke-opacity="${opacity}" stroke-linecap="round"/>`
   );
 }
@@ -477,27 +742,10 @@ function threadToSvgPath(thread) {
 function collectSvgPaths() {
   let paths = [];
 
-  for (let i = 0; i < lineLayers; i++) {
-    let threshold = gTextSize * (lineSpacing + layerStep * i);
-
-    for (let line of gLines) {
-      line.update(sampleDensity, threshold);
-
-      for (let segment of line.rowSegments) {
-        let layerSalt = i * 17.11;
-        let pairs = buildStitchPairs(segment, layerSalt);
-
-        for (let pair of pairs) {
-          let thread = computeThreadGeometry(
-            pair[0],
-            pair[1],
-            layerSalt + pair[0].charIndex * 0.31
-          );
-          paths.push(threadToSvgPath(thread));
-        }
-      }
-    }
-  }
+  forEachWeaveThread((pair, layerSalt, inside) => {
+    let thread = computeThreadGeometry(pair[0], pair[1], layerSalt, inside);
+    paths.push(threadToSvgPath(thread, threadStrokeHex(pair[0], pair[1], layerSalt)));
+  });
 
   return paths;
 }
@@ -518,14 +766,14 @@ function buildSvgDocument() {
   return (
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    '  <rect width="100%" height="100%" fill="#000000"/>\n' +
+    `  <rect width="100%" height="100%" fill="${backgroundColor}"/>\n` +
     `  ${paths.join('\n  ')}\n` +
     '</svg>'
   );
 }
 
 function downloadSvg() {
-  if (!font || gLines.length === 0) {
+  if (!fontsReady() || gLines.length === 0) {
     return;
   }
 
@@ -541,11 +789,3 @@ function downloadSvg() {
   URL.revokeObjectURL(url);
 }
 
-function drawWeaveSegment(segment, layerIndex) {
-  let layerSalt = layerIndex * 17.11;
-  let pairs = buildStitchPairs(segment, layerSalt);
-
-  for (let pair of pairs) {
-    drawCurvedThread(pair[0], pair[1], layerSalt + pair[0].charIndex * 0.31);
-  }
-}
