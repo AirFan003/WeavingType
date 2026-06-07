@@ -18,92 +18,159 @@
     <script src="sketch.js"></script>
   </head>
   <body>
-    <div id="controls">
-      <label class="text-label">
-        Text
-        <textarea id="text-input" rows="2" spellcheck="false">threading</textarea>
-      </label>
-      <label>
-        Sample density
-        <input id="density-slider" type="range" min="0.02" max="0.35" step="0.01" value="0.1" />
-        <span id="density-value">0.10</span>
-      </label>
-      <label>
-        Letter spacing
-        <input id="letter-spacing-slider" type="range" min="0" max="0.15" step="0.005" value="0.065" />
-        <span id="letter-spacing-value">0.065</span>
-      </label>
-      <label>
-        Within letters
-        <input id="within-slider" type="range" min="0" max="2" step="0.05" value="1" />
-        <span id="within-value">1.00</span>
-      </label>
-      <label>
-        In gaps
-        <input id="between-slider" type="range" min="0" max="2" step="0.05" value="1" />
-        <span id="between-value">1.00</span>
-      </label>
-      <label>
-        Line layers
-        <input id="layers-slider" type="range" min="1" max="20" step="1" value="10" />
-        <span id="layers-value">10</span>
-      </label>
-      <label>
-        Line spacing
-        <input id="spacing-slider" type="range" min="0.02" max="0.12" step="0.005" value="0.05" />
-        <span id="spacing-value">0.05</span>
-      </label>
-      <label>
-        Layer step
-        <input id="step-slider" type="range" min="0.002" max="0.03" step="0.001" value="0.01" />
-        <span id="step-value">0.01</span>
-      </label>
-      <label>
-        Stroke weight
-        <input id="stroke-slider" type="range" min="0.1" max="2" step="0.1" value="0.5" />
-        <span id="stroke-value">0.5</span>
-      </label>
-      <label>
-        Edge jitter
-        <input id="jitter-slider" type="range" min="0" max="1" step="0.05" value="0.45" />
-        <span id="jitter-value">0.45</span>
-      </label>
-      <label>
-        Sag within letters
-        <input id="within-sag-slider" type="range" min="0" max="2" step="0.05" value="0.5" />
-        <span id="within-sag-value">0.50</span>
-      </label>
-      <label>
-        Sag in gaps
-        <input id="gaps-sag-slider" type="range" min="0" max="2" step="0.05" value="0.5" />
-        <span id="gaps-sag-value">0.50</span>
-      </label>
-      <label>
-        Color mode
-        <select id="color-mode">
-          <option value="monotone">Monotone</option>
-          <option value="duotone">Duotone</option>
-          <option value="tritone">Tritone</option>
-        </select>
-      </label>
-      <label class="color-label" data-color-slot="0">
-        Color 1
-        <input id="color-1" type="color" value="#e8dcc8" />
-      </label>
-      <label class="color-label" data-color-slot="1">
-        Color 2
-        <input id="color-2" type="color" value="#c45c3e" />
-      </label>
-      <label class="color-label" data-color-slot="2">
-        Color 3
-        <input id="color-3" type="color" value="#6b8f71" />
-      </label>
-      <label>
-        Background
-        <input id="bg-color" type="color" value="#0c0b0a" />
-      </label>
-      <button type="button" id="download-svg">Download SVG</button>
-      <p class="hint">Supports English and Chinese. Use the text box for Chinese input (IME). Enter starts a new line.</p>
+    <div id="app">
+      <aside id="sidebar">
+        <header class="sidebar-header">
+          <h1>Weaving Type</h1>
+          <p class="sidebar-subtitle">Poster editor · woven typography</p>
+        </header>
+
+        <div class="text-input-block">
+          <label for="text-input">Text</label>
+          <textarea id="text-input" rows="5" spellcheck="false">threading</textarea>
+          <p class="hint">Words appear as movable chunks. Click to select, drag to move, corner handle to resize. Arrow keys nudge (Shift for fine).</p>
+        </div>
+
+        <section id="selection-controls" class="control-section is-hidden">
+          <h2>Selection</h2>
+          <p id="selected-chunk-label" class="selection-label">Selected: —</p>
+          <div class="control-row">
+            <label for="chunk-scale-slider">Word size</label>
+            <div class="control-input">
+              <input id="chunk-scale-slider" type="range" min="0.25" max="3" step="0.05" value="1" />
+              <span id="chunk-scale-value" class="control-value">1.00</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <h2>Text</h2>
+          <div class="control-row">
+            <label for="letter-size-slider">Letter size</label>
+            <div class="control-input">
+              <input id="letter-size-slider" type="range" min="0.35" max="1.5" step="0.05" value="1" />
+              <span id="letter-size-value" class="control-value">1.00</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="letter-spacing-slider">Letter spacing</label>
+            <div class="control-input">
+              <input id="letter-spacing-slider" type="range" min="0" max="0.15" step="0.005" value="0.065" />
+              <span id="letter-spacing-value" class="control-value">0.065</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <h2>Thread editing</h2>
+          <div class="control-row">
+            <label for="density-slider">Sample density</label>
+            <div class="control-input">
+              <input id="density-slider" type="range" min="0.02" max="0.35" step="0.01" value="0.1" />
+              <span id="density-value" class="control-value">0.10</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="layers-slider">Thread layers</label>
+            <div class="control-input">
+              <input id="layers-slider" type="range" min="1" max="20" step="1" value="10" />
+              <span id="layers-value" class="control-value">10</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="spacing-slider">Thread spacing</label>
+            <div class="control-input">
+              <input id="spacing-slider" type="range" min="0.02" max="0.12" step="0.005" value="0.05" />
+              <span id="spacing-value" class="control-value">0.05</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="step-slider">Layer step</label>
+            <div class="control-input">
+              <input id="step-slider" type="range" min="0.002" max="0.03" step="0.001" value="0.01" />
+              <span id="step-value" class="control-value">0.01</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="stroke-slider">Thread weight</label>
+            <div class="control-input">
+              <input id="stroke-slider" type="range" min="0.1" max="2" step="0.1" value="0.5" />
+              <span id="stroke-value" class="control-value">0.5</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="jitter-slider">Edge jitter</label>
+            <div class="control-input">
+              <input id="jitter-slider" type="range" min="0" max="1" step="0.05" value="0.45" />
+              <span id="jitter-value" class="control-value">0.45</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="within-sag-slider">Sag within letters</label>
+            <div class="control-input">
+              <input id="within-sag-slider" type="range" min="0" max="2" step="0.05" value="0.5" />
+              <span id="within-sag-value" class="control-value">0.50</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="gaps-sag-slider">Sag in gaps</label>
+            <div class="control-input">
+              <input id="gaps-sag-slider" type="range" min="0" max="2" step="0.05" value="0.5" />
+              <span id="gaps-sag-value" class="control-value">0.50</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <h2>Color</h2>
+          <div class="control-row">
+            <label for="color-mode">Color mode</label>
+            <div class="control-input">
+              <select id="color-mode">
+                <option value="monotone">Monotone</option>
+                <option value="duotone">Duotone</option>
+                <option value="tritone">Tritone</option>
+              </select>
+            </div>
+          </div>
+          <div class="control-row color-label" data-color-slot="0">
+            <label for="color-1">Color 1</label>
+            <div class="control-input">
+              <input id="color-1" type="color" value="#e8dcc8" />
+            </div>
+          </div>
+          <div class="control-row color-label" data-color-slot="1">
+            <label for="color-2">Color 2</label>
+            <div class="control-input">
+              <input id="color-2" type="color" value="#c45c3e" />
+            </div>
+          </div>
+          <div class="control-row color-label" data-color-slot="2">
+            <label for="color-3">Color 3</label>
+            <div class="control-input">
+              <input id="color-3" type="color" value="#6b8f71" />
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="bg-color">Background</label>
+            <div class="control-input">
+              <input id="bg-color" type="color" value="#0c0b0a" />
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section export-section">
+          <h2>Export</h2>
+          <div class="export-actions">
+            <button type="button" id="download-svg" class="btn">Download SVG</button>
+            <button type="button" id="download-png" class="btn">Download PNG</button>
+          </div>
+        </section>
+      </aside>
+
+      <main id="canvas-panel">
+        <div id="a4-frame" aria-label="A4 artboard"></div>
+      </main>
     </div>
   </body>
 </html>

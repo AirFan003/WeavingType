@@ -1,15 +1,13 @@
 // Created for the #Genuary2024 - Generative Typography
-// https://genuary.art/prompts#jan20
-// Interactive version: editable text + line density controls
+// Interactive poster editor with woven typography
 
 let fontEnglish;
 let fontChinese;
 let text = 'threading';
 let gTextSize = 250;
-let gMargin = 48;
 let gLineHeight = 0;
-let gParagraphGap = 0;
-let gLines = [];
+let textChunks = [];
+let letterSizeScale = 1;
 
 let sampleDensity = 0.1;
 let lineLayers = 10;
@@ -25,8 +23,6 @@ const MASK_BRIGHTNESS_THRESHOLD = 4;
 const BODY_SAMPLE_COUNT = 5;
 const BODY_INSIDE_MIN_RATIO = 0.34;
 const SAG_AMOUNT_SCALE = 0.06;
-let withinLetterDensity = 1;
-let betweenLetterDensity = 1;
 let letterSpacing = 0.065;
 let colorMode = 'monotone';
 let backgroundColor = '#0c0b0a';
@@ -34,6 +30,9 @@ let paletteColors = ['#e8dcc8', '#c45c3e', '#6b8f71'];
 
 let textInput;
 let isComposing = false;
+let selectedChunkId = null;
+let dragState = null;
+let nextChunkId = 0;
 
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
 const FONT_ENGLISH =
@@ -42,6 +41,7 @@ const FONT_CHINESE =
   'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff';
 const FONT_CHINESE_FULL =
   'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf';
+const A4_RATIO = 297 / 210;
 
 function preload() {
   fontEnglish = loadFont(FONT_ENGLISH);
@@ -60,35 +60,72 @@ function fontForChar(char) {
   return isCjkChar(char) ? fontChinese : fontEnglish;
 }
 
-function englishTrackingAfter() {
-  return gTextSize * letterSpacing;
+function hasCJK(value) {
+  return CJK_REGEX.test(value);
 }
 
-function charAdvance(char, addTrackingAfter) {
-  let width = fontForChar(char).textBounds(char, 0, 0, gTextSize).w;
+function charAdvanceForSize(char, addTrackingAfter, textSize) {
+  let width = fontForChar(char).textBounds(char, 0, 0, textSize).w;
 
   if (addTrackingAfter && !isCjkChar(char)) {
-    width += englishTrackingAfter();
+    width += textSize * letterSpacing;
   }
 
   return width;
 }
 
 function setup() {
-  let canvas = createCanvas(windowWidth, windowHeight - 80);
-  canvas.position(0, 80);
-  canvas.style('z-index', '0');
+  let size = getA4CanvasSize();
+  let canvas = createCanvas(size.w, size.h);
+  canvas.parent('a4-frame');
 
   stroke(255);
   noFill();
-
-  gLineHeight = gTextSize * 1.0;
-  gParagraphGap = gTextSize * 0.15;
+  syncCanvasMetrics();
 
   bindControls();
   text = textInput.value();
-  rebuildLayout();
+  syncChunksFromText();
   loadFullChineseFont();
+}
+
+function getA4CanvasSize() {
+  let panel = document.getElementById('canvas-panel');
+
+  if (!panel) {
+    return { w: 595, h: 842 };
+  }
+
+  let pad = 48;
+  let maxW = panel.clientWidth - pad * 2;
+  let maxH = panel.clientHeight - pad * 2;
+  let w = maxW;
+  let h = w * A4_RATIO;
+
+  if (h > maxH) {
+    h = maxH;
+    w = h / A4_RATIO;
+  }
+
+  return {
+    w: max(200, floor(w)),
+    h: max(280, floor(h)),
+  };
+}
+
+function syncCanvasMetrics() {
+  let baseSize = constrain(min(width, height) * 0.32, 72, 260);
+  gTextSize = baseSize * letterSizeScale;
+  gLineHeight = gTextSize * 1.0;
+}
+
+function resizeArtboard() {
+  let size = getA4CanvasSize();
+  resizeCanvas(size.w, size.h);
+  syncCanvasMetrics();
+  for (let chunk of textChunks) {
+    chunk.rebuildLine();
+  }
 }
 
 function loadFullChineseFont() {
@@ -96,7 +133,7 @@ function loadFullChineseFont() {
     FONT_CHINESE_FULL,
     (loadedFont) => {
       fontChinese = loadedFont;
-      rebuildLayout();
+      syncChunksFromText();
     },
     (error) => {
       console.warn('Extended Chinese font unavailable, using subset font.', error);
@@ -113,7 +150,7 @@ function bindControls() {
   textInput.elt.addEventListener('compositionend', () => {
     isComposing = false;
     text = textInput.value();
-    rebuildLayout();
+    syncChunksFromText();
   });
 
   textInput.input(() => {
@@ -121,21 +158,24 @@ function bindControls() {
       return;
     }
     text = textInput.value();
-    rebuildLayout();
+    syncChunksFromText();
   });
 
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
   });
+  bindSlider('letter-size-slider', 'letter-size-value', (v) => {
+    letterSizeScale = v;
+    syncCanvasMetrics();
+    for (let chunk of textChunks) {
+      chunk.rebuildLine();
+    }
+  });
   bindSlider('letter-spacing-slider', 'letter-spacing-value', (v) => {
     letterSpacing = v;
-    rebuildLayout();
-  });
-  bindSlider('within-slider', 'within-value', (v) => {
-    withinLetterDensity = v;
-  });
-  bindSlider('between-slider', 'between-value', (v) => {
-    betweenLetterDensity = v;
+    for (let chunk of textChunks) {
+      chunk.rebuildLine();
+    }
   });
   bindSlider('layers-slider', 'layers-value', (v) => {
     lineLayers = Math.round(v);
@@ -158,9 +198,17 @@ function bindControls() {
   bindSlider('gaps-sag-slider', 'gaps-sag-value', (v) => {
     gapsThreadSag = v;
   });
+  bindSlider('chunk-scale-slider', 'chunk-scale-value', (v) => {
+    let chunk = getSelectedChunk();
+    if (chunk) {
+      chunk.scale = v;
+      chunk.rebuildLine();
+    }
+  });
 
   bindColorControls();
   select('#download-svg').mousePressed(downloadSvg);
+  select('#download-png').mousePressed(downloadPng);
 }
 
 function bindColorControls() {
@@ -190,8 +238,8 @@ function bindColorControls() {
 function updateColorControlVisibility() {
   let slots = selectAll('.color-label');
 
-  for (let label of slots) {
-    let slot = parseInt(label.attribute('data-color-slot'), 10);
+  for (let row of slots) {
+    let slot = parseInt(row.attribute('data-color-slot'), 10);
     let show = false;
 
     if (colorMode === 'monotone') {
@@ -203,11 +251,26 @@ function updateColorControlVisibility() {
     }
 
     if (show) {
-      label.removeClass('is-hidden');
+      row.removeClass('is-hidden');
     } else {
-      label.addClass('is-hidden');
+      row.addClass('is-hidden');
     }
   }
+}
+
+function updateSelectionControls() {
+  let panel = select('#selection-controls');
+  let chunk = getSelectedChunk();
+
+  if (!chunk) {
+    panel.addClass('is-hidden');
+    return;
+  }
+
+  panel.removeClass('is-hidden');
+  select('#selected-chunk-label').html(`Selected: ${chunk.text}`);
+  select('#chunk-scale-slider').value(chunk.scale);
+  select('#chunk-scale-value').html(chunk.scale.toFixed(2));
 }
 
 function threadStrokeHex(a, b, layerSalt) {
@@ -259,131 +322,138 @@ function bindSlider(sliderId, labelId, onChange) {
   update();
 }
 
-function hasCJK(value) {
-  return CJK_REGEX.test(value);
-}
+function tokenizeText(value) {
+  let tokens = [];
+  let lines = value.split('\n');
 
-function lineWidth(value) {
-  let chars = [...value];
-  let widthTotal = 0;
-
-  for (let i = 0; i < chars.length; i++) {
-    widthTotal += charAdvance(chars[i], i < chars.length - 1);
-  }
-
-  return widthTotal;
-}
-
-function wrapParagraphByCharacters(paragraph, maxWidth) {
-  let lines = [];
-  let currentLine = '';
-
-  for (let char of paragraph) {
-    let trial = currentLine + char;
-
-    if (lineWidth(trial) > maxWidth && currentLine !== '') {
-      lines.push(currentLine);
-      currentLine = char;
-    } else {
-      currentLine = trial;
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    if (lineIdx > 0) {
+      tokens.push({ text: '', isLineBreak: true });
     }
-  }
 
-  if (currentLine !== '') {
-    lines.push(currentLine);
-  }
-
-  return lines;
-}
-
-function wrapParagraphByWords(paragraph, maxWidth) {
-  let lines = [];
-  let currentLine = '';
-  let words = paragraph.split(/(\s+)/);
-
-  for (let word of words) {
-    if (word === '') continue;
-
-    let trial = currentLine + word;
-
-    if (lineWidth(trial) > maxWidth && currentLine !== '') {
-      lines.push(currentLine);
-      currentLine = word.trimStart();
-    } else {
-      currentLine = trial;
-    }
-  }
-
-  if (currentLine !== '') {
-    lines.push(currentLine);
-  }
-
-  return lines;
-}
-
-function wrapParagraph(paragraph, maxWidth) {
-  if (hasCJK(paragraph)) {
-    return wrapParagraphByCharacters(paragraph, maxWidth);
-  }
-  return wrapParagraphByWords(paragraph, maxWidth);
-}
-
-function rebuildLayout() {
-  gLines = [];
-
-  if (!text || !fontsReady()) {
-    return;
-  }
-
-  let latinAscender = fontEnglish.textBounds('Hg', 0, 0, gTextSize).h;
-  let cjkAscender = fontChinese.textBounds('中', 0, 0, gTextSize).h;
-  let ascender = max(latinAscender, cjkAscender);
-  let maxWidth = width - gMargin * 2;
-  let paragraphs = text.split('\n');
-  let laidOut = [];
-
-  for (let paragraph of paragraphs) {
-    if (paragraph === '') {
-      laidOut.push({ text: '', blank: true });
+    let line = lines[lineIdx];
+    if (!line) {
       continue;
     }
 
-    for (let line of wrapParagraph(paragraph, maxWidth)) {
-      laidOut.push({ text: line, blank: false });
-    }
-  }
+    if (hasCJK(line)) {
+      let parts = line.split(/\s+/).filter(Boolean);
 
-  let contentHeight = 0;
-  for (let entry of laidOut) {
-    if (entry.blank) {
-      contentHeight += gParagraphGap;
+      for (let part of parts) {
+        if (/^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+$/.test(part)) {
+          for (let char of part) {
+            tokens.push({ text: char, isLineBreak: false });
+          }
+        } else {
+          tokens.push({ text: part, isLineBreak: false });
+        }
+      }
     } else {
-      contentHeight += gLineHeight;
+      for (let word of line.match(/\S+/g) || []) {
+        tokens.push({ text: word, isLineBreak: false });
+      }
     }
   }
 
-  let y = (height - contentHeight) / 2 + ascender;
-
-  for (let entry of laidOut) {
-    if (entry.blank) {
-      y += gParagraphGap;
-      continue;
-    }
-
-    gLines.push(new TextLine(entry.text, gMargin, y));
-    y += gLineHeight;
-  }
+  return tokens;
 }
 
-function getDensitySettings(density) {
-  let amount = max(density, 0);
+function defaultChunkPosition(tokenIndex, tokens) {
+  let row = 0;
+  let col = 0;
+
+  for (let i = 0; i < tokenIndex; i++) {
+    if (tokens[i].isLineBreak) {
+      row++;
+      col = 0;
+    } else {
+      col++;
+    }
+  }
+
+  let ascender = max(
+    fontEnglish.textBounds('Hg', 0, 0, gTextSize).h,
+    fontChinese.textBounds('中', 0, 0, gTextSize).h
+  );
 
   return {
-    layers: amount === 0 ? 0 : max(1, round(lineLayers * amount)),
-    sample: sampleDensity * amount,
-    spacing: lineSpacing / max(amount, 0.2),
-    step: layerStep / max(amount, 0.2),
+    x: width * 0.12 + col * width * 0.2,
+    y: height * 0.18 + row * gTextSize * 1.35 + ascender * 0.2,
   };
+}
+
+function syncChunksFromText() {
+  let tokens = tokenizeText(text || '');
+  let wordTokens = tokens.filter((token) => !token.isLineBreak);
+  let nextChunks = [];
+  let wordIndex = 0;
+
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].isLineBreak) {
+      continue;
+    }
+
+    let token = tokens[i];
+    let prev = textChunks[wordIndex];
+
+    if (prev && prev.text === token.text) {
+      prev.rebuildLine();
+      nextChunks.push(prev);
+    } else {
+      let pos = defaultChunkPosition(i, tokens);
+      nextChunks.push(new TextChunk(token.text, pos.x, pos.y, 1));
+    }
+
+    wordIndex++;
+  }
+
+  textChunks = nextChunks;
+
+  if (selectedChunkId && !getChunkById(selectedChunkId)) {
+    selectedChunkId = null;
+  }
+
+  updateSelectionControls();
+}
+
+function getChunkById(id) {
+  return textChunks.find((chunk) => chunk.id === id);
+}
+
+function getSelectedChunk() {
+  return getChunkById(selectedChunkId);
+}
+
+function hitTestChunk(mx, my) {
+  for (let i = textChunks.length - 1; i >= 0; i--) {
+    let chunk = textChunks[i];
+    if (chunk.containsPoint(mx, my)) {
+      return chunk;
+    }
+  }
+
+  return null;
+}
+
+function forEachWeaveThread(onThread) {
+  for (let i = 0; i < lineLayers; i++) {
+    let layerSalt = i * 17.11;
+
+    for (let chunk of textChunks) {
+      let line = chunk.line;
+      let threshold = chunk.textSize() * (lineSpacing + layerStep * i);
+      line.update(sampleDensity, threshold);
+
+      for (let segment of line.segments) {
+        let pairs = buildStitchPairs(segment, layerSalt);
+
+        for (let pair of pairs) {
+          let inside = isWithinLetterBody(pair[0], pair[1], line);
+          onThread(pair, layerSalt + pair[0].charIndex * 0.31, inside, chunk.textSize());
+        }
+      }
+    }
+  }
 }
 
 function charIndexAtPoint(x, y, masks) {
@@ -419,38 +489,6 @@ function isWithinLetterBody(a, b, line) {
   return insideCount / BODY_SAMPLE_COUNT >= BODY_INSIDE_MIN_RATIO;
 }
 
-function forEachWeaveThread(onThread) {
-  let passes = [
-    { density: withinLetterDensity, saltOffset: 0, within: true },
-    { density: betweenLetterDensity, saltOffset: 1000, within: false },
-  ];
-  for (let pass of passes) {
-    let settings = getDensitySettings(pass.density);
-
-    for (let i = 0; i < settings.layers; i++) {
-      let threshold = gTextSize * (settings.spacing + settings.step * i);
-
-      for (let line of gLines) {
-        line.update(settings.sample, threshold);
-        let layerSalt = pass.saltOffset + i * 17.11;
-
-        for (let segment of line.segments) {
-          let pairs = buildStitchPairs(segment, layerSalt, pass.density);
-
-          for (let pair of pairs) {
-            let inside = isWithinLetterBody(pair[0], pair[1], line);
-            if (inside !== pass.within) {
-              continue;
-            }
-
-            onThread(pair, layerSalt + pair[0].charIndex * 0.31, inside);
-          }
-        }
-      }
-    }
-  }
-}
-
 function draw() {
   let bg = hexToRgb(backgroundColor);
   background(bg.r, bg.g, bg.b);
@@ -460,9 +498,29 @@ function draw() {
     return;
   }
 
-  forEachWeaveThread((pair, layerSalt, inside) => {
-    drawCurvedThread(pair[0], pair[1], layerSalt, inside);
+  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
+    drawCurvedThread(pair[0], pair[1], layerSalt, inside, textSize);
   });
+
+  drawSelectionUI();
+  updateCanvasCursor();
+}
+
+function drawSelectionUI() {
+  let chunk = getSelectedChunk();
+  if (!chunk) {
+    return;
+  }
+
+  let b = chunk.getBounds();
+  noFill();
+  stroke(232, 220, 200, 200);
+  strokeWeight(1.5);
+  rect(b.x, b.y, b.w, b.h, 2);
+
+  fill(232, 220, 200);
+  noStroke();
+  circle(b.x + b.w, b.y + b.h, 10);
 }
 
 function drawStatusMessage(message) {
@@ -473,42 +531,165 @@ function drawStatusMessage(message) {
   text(message, width / 2, height / 2);
 }
 
-function keyPressed() {
-  if (document.activeElement === textInput.elt) {
+function mousePressed() {
+  if (mouseX < 0 || mouseY < 0 || mouseX > width || mouseY > height) {
     return;
   }
 
-  if (keyCode === BACKSPACE) {
-    text = text.slice(0, -1);
-    textInput.value(text);
-    rebuildLayout();
-    return false;
+  let chunk = hitTestChunk(mouseX, mouseY);
+
+  if (chunk) {
+    selectedChunkId = chunk.id;
+    updateSelectionControls();
+
+    let b = chunk.getBounds();
+    let onHandle = dist(mouseX, mouseY, b.x + b.w, b.y + b.h) < 14;
+
+    if (onHandle) {
+      dragState = {
+        mode: 'resize',
+        chunkId: chunk.id,
+        startScale: chunk.scale,
+        startY: mouseY,
+      };
+    } else {
+      dragState = {
+        mode: 'move',
+        chunkId: chunk.id,
+        lastX: mouseX,
+        lastY: mouseY,
+      };
+    }
+  } else {
+    selectedChunkId = null;
+    updateSelectionControls();
+  }
+}
+
+function mouseDragged() {
+  if (!dragState) {
+    return;
   }
 
-  if (keyCode === ENTER) {
-    text += '\n';
-    textInput.value(text);
-    rebuildLayout();
-    return false;
+  let chunk = getChunkById(dragState.chunkId);
+  if (!chunk) {
+    return;
   }
 
-  if (key.length === 1 && !keyDown(CONTROL) && !keyDown(META)) {
-    text += key;
-    textInput.value(text);
-    rebuildLayout();
+  if (dragState.mode === 'move') {
+    chunk.x += mouseX - dragState.lastX;
+    chunk.y += mouseY - dragState.lastY;
+    dragState.lastX = mouseX;
+    dragState.lastY = mouseY;
+    chunk.rebuildLine();
+  } else if (dragState.mode === 'resize') {
+    chunk.scale = constrain(dragState.startScale + (mouseY - dragState.startY) * 0.008, 0.25, 3);
+    chunk.rebuildLine();
+    updateSelectionControls();
+  }
+}
+
+function mouseReleased() {
+  dragState = null;
+}
+
+function keyPressed() {
+  let chunk = getSelectedChunk();
+  if (!chunk) {
+    return;
+  }
+
+  let step = keyIsDown(SHIFT) ? 1 : 5;
+
+  if (keyCode === LEFT_ARROW) {
+    chunk.x -= step;
+    chunk.rebuildLine();
     return false;
   }
+  if (keyCode === RIGHT_ARROW) {
+    chunk.x += step;
+    chunk.rebuildLine();
+    return false;
+  }
+  if (keyCode === UP_ARROW) {
+    chunk.y -= step;
+    chunk.rebuildLine();
+    return false;
+  }
+  if (keyCode === DOWN_ARROW) {
+    chunk.y += step;
+    chunk.rebuildLine();
+    return false;
+  }
+}
+
+function updateCanvasCursor() {
+  let canvas = document.querySelector('#a4-frame canvas');
+  if (!canvas) {
+    return;
+  }
+
+  if (dragState) {
+    canvas.style.cursor = dragState.mode === 'resize' ? 'nwse-resize' : 'grabbing';
+    return;
+  }
+
+  if (mouseX < 0 || mouseY < 0 || mouseX > width || mouseY > height) {
+    canvas.style.cursor = 'default';
+    return;
+  }
+
+  let chunk = hitTestChunk(mouseX, mouseY);
+  if (!chunk) {
+    canvas.style.cursor = 'default';
+    return;
+  }
+
+  let b = chunk.getBounds();
+  let onHandle = dist(mouseX, mouseY, b.x + b.w, b.y + b.h) < 14;
+  canvas.style.cursor = onHandle ? 'nwse-resize' : 'grab';
 }
 
 function windowResized() {
-  resizeCanvas(windowWidth, windowHeight - 80);
-  rebuildLayout();
+  resizeArtboard();
+}
+
+class TextChunk {
+  constructor(textValue, x, y, scale) {
+    this.id = `chunk-${nextChunkId++}`;
+    this.text = textValue;
+    this.x = x;
+    this.y = y;
+    this.scale = scale;
+    this.line = null;
+    this.bounds = { x: 0, y: 0, w: 0, h: 0 };
+    this.rebuildLine();
+  }
+
+  textSize() {
+    return gTextSize * this.scale;
+  }
+
+  rebuildLine() {
+    this.line = new TextLine(this.text, this.x, this.y, this.textSize());
+    this.bounds = this.line.getBounds();
+  }
+
+  getBounds() {
+    return this.bounds;
+  }
+
+  containsPoint(mx, my) {
+    let b = this.bounds;
+    return mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
+  }
 }
 
 class LetterMask {
-  constructor(char) {
+  constructor(char, textSize) {
     this.charIndex = char.index;
-    let bounds = char.font.textBounds(char.c, char.xp, char.yp, gTextSize);
+    this.textSize = textSize;
+    let bounds = char.font.textBounds(char.c, char.xp, char.yp, textSize);
     let pad = 14;
 
     this.offsetX = floor(bounds.x) - pad;
@@ -522,7 +703,7 @@ class LetterMask {
     this.graphics.fill(255);
     this.graphics.noStroke();
     this.graphics.textFont(char.font);
-    this.graphics.textSize(gTextSize);
+    this.graphics.textSize(textSize);
     this.graphics.textAlign(LEFT, BASELINE);
     this.graphics.text(char.c, char.xp - this.offsetX, char.yp - this.offsetY);
   }
@@ -552,30 +733,62 @@ class LetterMask {
 }
 
 class TextLine {
-  constructor(text, startX, yp) {
+  constructor(textValue, startX, yp, textSize) {
+    this.textSize = textSize;
     this.chars = [];
     let xp = startX;
 
-    let chars = [...text];
+    let chars = [...textValue];
     let index = 0;
 
     for (let i = 0; i < chars.length; i++) {
       let c = chars[i];
       let charFont = fontForChar(c);
       this.chars.push({ c, xp, yp, index, font: charFont });
-      xp += charAdvance(c, i < chars.length - 1);
+      xp += charAdvanceForSize(c, i < chars.length - 1, textSize);
       index++;
     }
 
-    this.masks = this.chars.map((char) => new LetterMask(char));
+    this.masks = this.chars.map((char) => new LetterMask(char, textSize));
     this.segments = [];
+    this.bounds = this.computeBounds();
+  }
+
+  computeBounds() {
+    if (this.chars.length === 0) {
+      return { x: 0, y: 0, w: 0, h: 0 };
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (let char of this.chars) {
+      let b = char.font.textBounds(char.c, char.xp, char.yp, this.textSize);
+      minX = min(minX, b.x);
+      minY = min(minY, b.y);
+      maxX = max(maxX, b.x + b.w);
+      maxY = max(maxY, b.y + b.h);
+    }
+
+    return {
+      x: minX,
+      y: minY,
+      w: maxX - minX,
+      h: maxY - minY,
+    };
+  }
+
+  getBounds() {
+    return this.bounds;
   }
 
   update(sample, threshold) {
     let points = [];
 
     for (let char of this.chars) {
-      let charPoints = char.font.textToPoints(char.c, char.xp, char.yp, gTextSize, {
+      let charPoints = char.font.textToPoints(char.c, char.xp, char.yp, this.textSize, {
         sampleFactor: sample,
         simplifyThreshold: 0,
       });
@@ -669,13 +882,13 @@ function buildStitchPairs(segment, layerSalt, density = 1) {
   return pairs;
 }
 
-function sagAmountForThread(inside) {
-  return (inside ? withinThreadSag : gapsThreadSag) * gTextSize * SAG_AMOUNT_SCALE;
+function sagAmountForThread(inside, textSize) {
+  return (inside ? withinThreadSag : gapsThreadSag) * textSize * SAG_AMOUNT_SCALE;
 }
 
-function computeThreadGeometry(a, b, layerSalt, inside) {
-  let jitterAmt = edgeJitter * gTextSize * 0.018;
-  let sagAmt = sagAmountForThread(inside);
+function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
+  let jitterAmt = edgeJitter * textSize * 0.018;
+  let sagAmt = sagAmountForThread(inside, textSize);
 
   let start = jitterPoint(a.x, a.y, jitterAmt, layerSalt);
   let end = jitterPoint(b.x, b.y, jitterAmt, layerSalt + 5.2);
@@ -711,8 +924,8 @@ function computeThreadGeometry(a, b, layerSalt, inside) {
   };
 }
 
-function drawCurvedThread(a, b, layerSalt, inside) {
-  let thread = computeThreadGeometry(a, b, layerSalt, inside);
+function drawCurvedThread(a, b, layerSalt, inside, textSize) {
+  let thread = computeThreadGeometry(a, b, layerSalt, inside, textSize);
   let strokeRgb = hexToRgb(threadStrokeHex(a, b, layerSalt));
 
   stroke(strokeRgb.r, strokeRgb.g, strokeRgb.b, thread.alpha);
@@ -742,22 +955,34 @@ function threadToSvgPath(thread, strokeHex) {
 function collectSvgPaths() {
   let paths = [];
 
-  forEachWeaveThread((pair, layerSalt, inside) => {
-    let thread = computeThreadGeometry(pair[0], pair[1], layerSalt, inside);
+  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
+    let thread = computeThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
     paths.push(threadToSvgPath(thread, threadStrokeHex(pair[0], pair[1], layerSalt)));
   });
 
   return paths;
 }
 
-function makeSvgFilename() {
+function makeExportBasename() {
   let slug = text
     .trim()
     .slice(0, 30)
     .replace(/[^\w\u4e00-\u9fff-]+/gu, '-')
     .replace(/^-+|-+$/g, '');
 
-  return `weaving-${slug || 'type'}.svg`;
+  return `weaving-${slug || 'type'}`;
+}
+
+function makeSvgFilename() {
+  return `${makeExportBasename()}.svg`;
+}
+
+function downloadPng() {
+  if (!fontsReady() || textChunks.length === 0) {
+    return;
+  }
+
+  saveCanvas(makeExportBasename(), 'png');
 }
 
 function buildSvgDocument() {
@@ -773,7 +998,7 @@ function buildSvgDocument() {
 }
 
 function downloadSvg() {
-  if (!fontsReady() || gLines.length === 0) {
+  if (!fontsReady() || textChunks.length === 0) {
     return;
   }
 
@@ -788,4 +1013,3 @@ function downloadSvg() {
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
 }
-
