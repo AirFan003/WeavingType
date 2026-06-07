@@ -34,6 +34,27 @@ let selectedChunkId = null;
 let dragState = null;
 let nextChunkId = 0;
 
+let threadPhysicsMap = new Map();
+let prevMouseX = 0;
+let prevMouseY = 0;
+let mouseVelX = 0;
+let mouseVelY = 0;
+let mouseNearThreads = false;
+
+let stitchPairCache = new Map();
+let threadGeometryCache = new Map();
+let paletteRgbCache = {};
+
+const THREAD_PHYSICS = {
+  influenceRadius: 52,
+  springK: 0.24,
+  damping: 0.76,
+  mouseSagStrength: 1.75,
+  impulseStrength: 0.62,
+  pullStrength: 0.0045,
+  settleThreshold: 0.08,
+};
+
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
 const FONT_ENGLISH =
   'https://cdn.jsdelivr.net/gh/adobe-fonts/source-serif@release/VAR/SourceSerif4Variable-Roman.ttf';
@@ -163,6 +184,7 @@ function bindControls() {
 
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
+    invalidateWeaveCaches();
   });
   bindSlider('letter-size-slider', 'letter-size-value', (v) => {
     letterSizeScale = v;
@@ -179,12 +201,15 @@ function bindControls() {
   });
   bindSlider('layers-slider', 'layers-value', (v) => {
     lineLayers = Math.round(v);
+    invalidateWeaveCaches();
   });
   bindSlider('spacing-slider', 'spacing-value', (v) => {
     lineSpacing = v;
+    invalidateWeaveCaches();
   });
   bindSlider('step-slider', 'step-value', (v) => {
     layerStep = v;
+    invalidateWeaveCaches();
   });
   bindSlider('stroke-slider', 'stroke-value', (v) => {
     strokeW = v;
@@ -408,6 +433,7 @@ function syncChunksFromText() {
   }
 
   textChunks = nextChunks;
+  invalidateWeaveCaches();
 
   if (selectedChunkId && !getChunkById(selectedChunkId)) {
     selectedChunkId = null;
@@ -435,21 +461,43 @@ function hitTestChunk(mx, my) {
   return null;
 }
 
+function invalidateWeaveCaches() {
+  stitchPairCache.clear();
+  threadGeometryCache.clear();
+
+  for (let chunk of textChunks) {
+    if (chunk.line) {
+      chunk.line.invalidateCache();
+    }
+  }
+}
+
+function getPaletteRgb(hex) {
+  if (!paletteRgbCache[hex]) {
+    paletteRgbCache[hex] = hexToRgb(hex);
+  }
+
+  return paletteRgbCache[hex];
+}
+
 function forEachWeaveThread(onThread) {
-  for (let i = 0; i < lineLayers; i++) {
-    let layerSalt = i * 17.11;
+  for (let chunk of textChunks) {
+    let line = chunk.line;
+    let textSize = chunk.textSize();
 
-    for (let chunk of textChunks) {
-      let line = chunk.line;
-      let threshold = chunk.textSize() * (lineSpacing + layerStep * i);
-      line.update(sampleDensity, threshold);
+    line.ensureRawPoints(sampleDensity);
 
-      for (let segment of line.segments) {
-        let pairs = buildStitchPairs(segment, layerSalt);
+    for (let i = 0; i < lineLayers; i++) {
+      let layerSalt = i * 17.11;
+      let threshold = textSize * (lineSpacing + layerStep * i);
+      let segments = line.segmentsForThreshold(threshold);
+
+      for (let segment of segments) {
+        let pairs = stitchPairsForSegment(segment, layerSalt);
 
         for (let pair of pairs) {
-          let inside = isWithinLetterBody(pair[0], pair[1], line);
-          onThread(pair, layerSalt + pair[0].charIndex * 0.31, inside, chunk.textSize());
+          let inside = line.isWithinLetterBody(pair[0], pair[1]);
+          onThread(pair, layerSalt + pair[0].charIndex * 0.31, inside, textSize, chunk);
         }
       }
     }
@@ -467,26 +515,31 @@ function charIndexAtPoint(x, y, masks) {
 }
 
 function isWithinLetterBody(a, b, line) {
-  let aChar = charIndexAtPoint(a.x, a.y, line.masks);
-  let bChar = charIndexAtPoint(b.x, b.y, line.masks);
+  return line.isWithinLetterBody(a, b);
+}
 
-  if (aChar === null || bChar === null || aChar !== bChar) {
-    return false;
+function buildChunkInteraction(mouseInfluence) {
+  let interaction = new Map();
+
+  for (let chunk of textChunks) {
+    let textSize = chunk.textSize();
+    let influenceRadius = threadInfluenceRadius(textSize);
+    let bounds = chunk.getBounds();
+
+    interaction.set(chunk.id, {
+      textSize,
+      influenceRadius,
+      bounds,
+      chunkNear:
+        mouseInfluence &&
+        mouseX >= bounds.x - influenceRadius &&
+        mouseX <= bounds.x + bounds.w + influenceRadius &&
+        mouseY >= bounds.y - influenceRadius &&
+        mouseY <= bounds.y + bounds.h + influenceRadius * 2,
+    });
   }
 
-  let insideCount = 0;
-
-  for (let i = 0; i < BODY_SAMPLE_COUNT; i++) {
-    let t = i / (BODY_SAMPLE_COUNT - 1);
-    let x = lerp(a.x, b.x, t);
-    let y = lerp(a.y, b.y, t);
-
-    if (charIndexAtPoint(x, y, line.masks) === aChar) {
-      insideCount++;
-    }
-  }
-
-  return insideCount / BODY_SAMPLE_COUNT >= BODY_INSIDE_MIN_RATIO;
+  return interaction;
 }
 
 function draw() {
@@ -498,9 +551,60 @@ function draw() {
     return;
   }
 
-  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
-    drawCurvedThread(pair[0], pair[1], layerSalt, inside, textSize);
+  mouseVelX = mouseX - prevMouseX;
+  mouseVelY = mouseY - prevMouseY;
+  prevMouseX = mouseX;
+  prevMouseY = mouseY;
+  mouseNearThreads = false;
+
+  let mouseInfluence =
+    !dragState && mouseX >= 0 && mouseY >= 0 && mouseX <= width && mouseY <= height;
+  let activeThreadIds = new Set();
+  let chunkInteraction = buildChunkInteraction(mouseInfluence);
+
+  forEachWeaveThread((pair, layerSalt, inside, textSize, chunk) => {
+    let id = threadPhysicsId(pair[0], pair[1], layerSalt);
+    let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
+    let state = threadPhysicsMap.get(id);
+    let info = chunkInteraction.get(chunk.id);
+    let influenceRadius = info.influenceRadius;
+    let chunkNear = info.chunkNear;
+    let nearMouse = false;
+    let threadDist = Infinity;
+
+    if (chunkNear || (state && !threadPhysicsIsSettled(state))) {
+      threadDist = fastDistanceToThread(mouseX, mouseY, thread, influenceRadius);
+
+      if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.35) {
+        nearMouse = true;
+      }
+    }
+
+    let simulate = nearMouse || (state && !threadPhysicsIsSettled(state));
+
+    if (!simulate) {
+      renderCurvedThread(thread, pair[0], pair[1], layerSalt);
+      return;
+    }
+
+    activeThreadIds.add(id);
+
+    if (!state) {
+      state = { offsetX: 0, offsetY: 0, velX: 0, velY: 0 };
+      threadPhysicsMap.set(id, state);
+    }
+
+    if (mouseInfluence && threadDist < influenceRadius) {
+      applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius);
+      mouseNearThreads = true;
+    }
+
+    stepThreadPhysics(state);
+    applyThreadPhysicsToGeometry(thread, state);
+    renderCurvedThread(thread, pair[0], pair[1], layerSalt);
   });
+
+  pruneThreadPhysics(activeThreadIds);
 
   drawSelectionUI();
   updateCanvasCursor();
@@ -640,14 +744,14 @@ function updateCanvasCursor() {
   }
 
   let chunk = hitTestChunk(mouseX, mouseY);
-  if (!chunk) {
-    canvas.style.cursor = 'default';
+  if (chunk) {
+    let b = chunk.getBounds();
+    let onHandle = dist(mouseX, mouseY, b.x + b.w, b.y + b.h) < 14;
+    canvas.style.cursor = onHandle ? 'nwse-resize' : 'grab';
     return;
   }
 
-  let b = chunk.getBounds();
-  let onHandle = dist(mouseX, mouseY, b.x + b.w, b.y + b.h) < 14;
-  canvas.style.cursor = onHandle ? 'nwse-resize' : 'grab';
+  canvas.style.cursor = mouseNearThreads ? 'pointer' : 'default';
 }
 
 function windowResized() {
@@ -671,6 +775,13 @@ class TextChunk {
   }
 
   rebuildLine() {
+    stitchPairCache.clear();
+    threadGeometryCache.clear();
+
+    if (this.line) {
+      this.line.invalidateCache();
+    }
+
     this.line = new TextLine(this.text, this.x, this.y, this.textSize());
     this.bounds = this.line.getBounds();
   }
@@ -750,8 +861,101 @@ class TextLine {
     }
 
     this.masks = this.chars.map((char) => new LetterMask(char, textSize));
-    this.segments = [];
+    this.rawPoints = null;
+    this.rawSample = null;
+    this.segmentCache = new Map();
+    this.bodyCache = new Map();
     this.bounds = this.computeBounds();
+  }
+
+  invalidateCache() {
+    this.rawPoints = null;
+    this.rawSample = null;
+    this.segmentCache.clear();
+    this.bodyCache.clear();
+  }
+
+  ensureRawPoints(sample) {
+    if (this.rawPoints && this.rawSample === sample) {
+      return;
+    }
+
+    this.rawSample = sample;
+    this.segmentCache.clear();
+    this.bodyCache.clear();
+    stitchPairCache.clear();
+    threadGeometryCache.clear();
+    this.rawPoints = [];
+
+    for (let char of this.chars) {
+      let charPoints = char.font.textToPoints(char.c, char.xp, char.yp, this.textSize, {
+        sampleFactor: sample,
+        simplifyThreshold: 0,
+      });
+
+      for (let pt of charPoints) {
+        this.rawPoints.push({ x: pt.x, y: pt.y, charIndex: char.index });
+      }
+    }
+  }
+
+  segmentsForThreshold(threshold) {
+    let key = threshold.toFixed(5);
+
+    if (this.segmentCache.has(key)) {
+      return this.segmentCache.get(key);
+    }
+
+    let groups = {};
+
+    for (let pt of this.rawPoints) {
+      let roundedY = floor(pt.y / threshold);
+      groups[roundedY] = groups[roundedY] || [];
+      groups[roundedY].push(pt);
+    }
+
+    let segments = [];
+
+    for (let row of Object.values(groups)) {
+      for (let segment of splitRowIntoSegments(row)) {
+        segments.push(segment);
+      }
+    }
+
+    this.segmentCache.set(key, segments);
+    return segments;
+  }
+
+  isWithinLetterBody(a, b) {
+    let key = `${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}`;
+
+    if (this.bodyCache.has(key)) {
+      return this.bodyCache.get(key);
+    }
+
+    let aChar = charIndexAtPoint(a.x, a.y, this.masks);
+    let bChar = charIndexAtPoint(b.x, b.y, this.masks);
+
+    if (aChar === null || bChar === null || aChar !== bChar) {
+      this.bodyCache.set(key, false);
+      return false;
+    }
+
+    let insideCount = 0;
+
+    for (let i = 0; i < BODY_SAMPLE_COUNT; i++) {
+      let t = i / (BODY_SAMPLE_COUNT - 1);
+      let x = lerp(a.x, b.x, t);
+      let y = lerp(a.y, b.y, t);
+
+      if (charIndexAtPoint(x, y, this.masks) === aChar) {
+        insideCount++;
+      }
+    }
+
+    let inside = insideCount / BODY_SAMPLE_COUNT >= BODY_INSIDE_MIN_RATIO;
+    this.bodyCache.set(key, inside);
+    return inside;
   }
 
   computeBounds() {
@@ -782,36 +986,6 @@ class TextLine {
 
   getBounds() {
     return this.bounds;
-  }
-
-  update(sample, threshold) {
-    let points = [];
-
-    for (let char of this.chars) {
-      let charPoints = char.font.textToPoints(char.c, char.xp, char.yp, this.textSize, {
-        sampleFactor: sample,
-        simplifyThreshold: 0,
-      });
-
-      for (let pt of charPoints) {
-        points.push({ x: pt.x, y: pt.y, charIndex: char.index });
-      }
-    }
-
-    let groups = {};
-
-    for (let pt of points) {
-      let roundedY = floor(pt.y / threshold);
-      groups[roundedY] = groups[roundedY] || [];
-      groups[roundedY].push(pt);
-    }
-
-    this.segments = [];
-    for (let row of Object.values(groups)) {
-      for (let segment of splitRowIntoSegments(row)) {
-        this.segments.push(segment);
-      }
-    }
   }
 }
 
@@ -882,8 +1056,162 @@ function buildStitchPairs(segment, layerSalt, density = 1) {
   return pairs;
 }
 
+function stitchPairsForSegment(segment, layerSalt) {
+  if (segment.length === 0) {
+    return [];
+  }
+
+  let last = segment[segment.length - 1];
+  let key = `${layerSalt}|${segment[0].x.toFixed(1)}|${segment[0].y.toFixed(1)}|${segment.length}|${last.x.toFixed(1)}|${last.y.toFixed(1)}`;
+
+  if (stitchPairCache.has(key)) {
+    return stitchPairCache.get(key);
+  }
+
+  let pairs = buildStitchPairs(segment, layerSalt);
+  stitchPairCache.set(key, pairs);
+  return pairs;
+}
+
+function copyThreadGeometry(thread) {
+  return {
+    start: { x: thread.start.x, y: thread.start.y },
+    ctrl: { x: thread.ctrl.x, y: thread.ctrl.y },
+    end: { x: thread.end.x, y: thread.end.y },
+    weight: thread.weight,
+    alpha: thread.alpha,
+  };
+}
+
+function getThreadGeometry(a, b, layerSalt, inside, textSize) {
+  let key = `${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}|${inside ? 1 : 0}`;
+
+  if (!threadGeometryCache.has(key)) {
+    threadGeometryCache.set(key, computeThreadGeometry(a, b, layerSalt, inside, textSize));
+
+    if (threadGeometryCache.size > 12000) {
+      threadGeometryCache.clear();
+    }
+  }
+
+  return copyThreadGeometry(threadGeometryCache.get(key));
+}
+
 function sagAmountForThread(inside, textSize) {
   return (inside ? withinThreadSag : gapsThreadSag) * textSize * SAG_AMOUNT_SCALE;
+}
+
+function threadPhysicsId(a, b, layerSalt) {
+  return `${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}`;
+}
+
+function pruneThreadPhysics(activeIds) {
+  for (let id of threadPhysicsMap.keys()) {
+    if (!activeIds.has(id)) {
+      threadPhysicsMap.delete(id);
+    }
+  }
+}
+
+function threadPhysicsIsSettled(state) {
+  let threshold = THREAD_PHYSICS.settleThreshold;
+
+  return (
+    abs(state.offsetX) < threshold &&
+    abs(state.offsetY) < threshold &&
+    abs(state.velX) < threshold &&
+    abs(state.velY) < threshold
+  );
+}
+
+function threadInfluenceRadius(textSize) {
+  return THREAD_PHYSICS.influenceRadius * (textSize / 180);
+}
+
+function sampleQuadraticBezier(p0, p1, p2, t) {
+  let mt = 1 - t;
+
+  return {
+    x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+    y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y,
+  };
+}
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  let dx = x2 - x1;
+  let dy = y2 - y1;
+  let lenSq = dx * dx + dy * dy;
+
+  if (lenSq === 0) {
+    return dist(px, py, x1, y1);
+  }
+
+  let t = constrain(((px - x1) * dx + (py - y1) * dy) / lenSq, 0, 1);
+
+  return dist(px, py, x1 + dx * t, y1 + dy * t);
+}
+
+function distanceToQuadraticBezier(mx, my, start, ctrl, end) {
+  let minDist = Infinity;
+  let prev = start;
+  let samples = 5;
+
+  for (let i = 1; i <= samples; i++) {
+    let pt = sampleQuadraticBezier(start, ctrl, end, i / samples);
+    minDist = min(minDist, dist(mx, my, pt.x, pt.y));
+    minDist = min(minDist, distanceToSegment(mx, my, prev.x, prev.y, pt.x, pt.y));
+    prev = pt;
+  }
+
+  return minDist;
+}
+
+function fastDistanceToThread(mx, my, thread, influenceRadius) {
+  let minX = min(thread.start.x, thread.ctrl.x, thread.end.x) - influenceRadius;
+  let maxX = max(thread.start.x, thread.ctrl.x, thread.end.x) + influenceRadius;
+  let minY = min(thread.start.y, thread.ctrl.y, thread.end.y) - influenceRadius;
+  let maxY = max(thread.start.y, thread.ctrl.y, thread.end.y) + influenceRadius;
+
+  if (mx < minX || mx > maxX || my < minY || my > maxY) {
+    return Infinity;
+  }
+
+  return distanceToQuadraticBezier(mx, my, thread.start, thread.ctrl, thread.end);
+}
+
+function applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius) {
+  if (threadDist > influenceRadius) {
+    return;
+  }
+
+  let influence = sq(1 - threadDist / influenceRadius);
+  let sagPull = influence * THREAD_PHYSICS.mouseSagStrength * textSize * 0.09;
+
+  state.velY += sagPull * 0.18 + mouseVelY * influence * THREAD_PHYSICS.impulseStrength * 0.14;
+  state.velX += mouseVelX * influence * THREAD_PHYSICS.impulseStrength * 0.1;
+  state.offsetY += sagPull * 0.06;
+
+  let pull = influence * THREAD_PHYSICS.pullStrength;
+  state.velX += (mouseX - thread.ctrl.x) * pull;
+  state.velY += (mouseY - thread.ctrl.y) * pull * 1.35;
+}
+
+function stepThreadPhysics(state) {
+  state.velX += -state.offsetX * THREAD_PHYSICS.springK;
+  state.velY += -state.offsetY * THREAD_PHYSICS.springK;
+  state.velX *= THREAD_PHYSICS.damping;
+  state.velY *= THREAD_PHYSICS.damping;
+  state.offsetX += state.velX;
+  state.offsetY += state.velY;
+}
+
+function applyThreadPhysicsToGeometry(thread, state) {
+  thread.ctrl.x += state.offsetX;
+  thread.ctrl.y += state.offsetY;
+  thread.start.x += state.offsetX * 0.12;
+  thread.start.y += state.offsetY * 0.18;
+  thread.end.x += state.offsetX * 0.12;
+  thread.end.y += state.offsetY * 0.18;
 }
 
 function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
@@ -924,9 +1252,8 @@ function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
   };
 }
 
-function drawCurvedThread(a, b, layerSalt, inside, textSize) {
-  let thread = computeThreadGeometry(a, b, layerSalt, inside, textSize);
-  let strokeRgb = hexToRgb(threadStrokeHex(a, b, layerSalt));
+function renderCurvedThread(thread, a, b, layerSalt) {
+  let strokeRgb = getPaletteRgb(threadStrokeHex(a, b, layerSalt));
 
   stroke(strokeRgb.r, strokeRgb.g, strokeRgb.b, thread.alpha);
   strokeWeight(thread.weight);
@@ -935,6 +1262,11 @@ function drawCurvedThread(a, b, layerSalt, inside, textSize) {
   vertex(thread.start.x, thread.start.y);
   quadraticVertex(thread.ctrl.x, thread.ctrl.y, thread.end.x, thread.end.y);
   endShape();
+}
+
+function drawCurvedThread(a, b, layerSalt, inside, textSize) {
+  let thread = getThreadGeometry(a, b, layerSalt, inside, textSize);
+  renderCurvedThread(thread, a, b, layerSalt);
 }
 
 function svgNumber(value) {
@@ -956,7 +1288,7 @@ function collectSvgPaths() {
   let paths = [];
 
   forEachWeaveThread((pair, layerSalt, inside, textSize) => {
-    let thread = computeThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
+    let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
     paths.push(threadToSvgPath(thread, threadStrokeHex(pair[0], pair[1], layerSalt)));
   });
 
