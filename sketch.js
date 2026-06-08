@@ -61,6 +61,7 @@ let recordStream = null;
 let recordedChunks = [];
 let recordButton = null;
 let recordingIndicator = null;
+let ffmpegConverter = null;
 let posterArchive = [];
 let activeArchiveId = null;
 let archiveListElement = null;
@@ -1731,15 +1732,133 @@ function getRecordCanvasElement() {
 }
 
 function getRecordingMimeType() {
-  let types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  let mp4Types = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+  ];
+  let webmTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 
-  for (let type of types) {
+  for (let type of mp4Types) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  for (let type of webmTypes) {
     if (MediaRecorder.isTypeSupported(type)) {
       return type;
     }
   }
 
   return '';
+}
+
+function recordingProducesMp4(mimeType) {
+  return mimeType.includes('mp4');
+}
+
+function loadScriptOnce(src, isLoaded) {
+  if (isLoaded()) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    let script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+async function loadFfmpegConverter() {
+  if (ffmpegConverter) {
+    return ffmpegConverter;
+  }
+
+  await loadScriptOnce(
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js',
+    () => window.FFmpegWASM
+  );
+  await loadScriptOnce(
+    'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js',
+    () => window.FFmpegUtil
+  );
+
+  let { FFmpeg } = FFmpegWASM;
+  let ffmpeg = new FFmpeg();
+  await ffmpeg.load({
+    coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.js',
+    wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-st@0.12.6/dist/umd/ffmpeg-core.wasm',
+  });
+
+  ffmpegConverter = ffmpeg;
+  return ffmpegConverter;
+}
+
+async function convertWebmBlobToMp4(webmBlob) {
+  let ffmpeg = await loadFfmpegConverter();
+  let { fetchFile } = FFmpegUtil;
+
+  await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+  await ffmpeg.exec([
+    '-i',
+    'input.webm',
+    '-an',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'fast',
+    '-crf',
+    '18',
+    '-pix_fmt',
+    'yuv420p',
+    '-movflags',
+    '+faststart',
+    'output.mp4',
+  ]);
+
+  let data = await ffmpeg.readFile('output.mp4');
+  return new Blob([data.buffer], { type: 'video/mp4' });
+}
+
+async function finalizeRecording(mimeType) {
+  if (recordStream) {
+    for (let track of recordStream.getTracks()) {
+      track.stop();
+    }
+    recordStream = null;
+  }
+
+  try {
+    if (recordedChunks.length === 0) {
+      return;
+    }
+
+    let blob = new Blob(recordedChunks, { type: mimeType });
+
+    if (!recordingProducesMp4(mimeType)) {
+      if (recordButton) {
+        recordButton.html('Converting to MP4…');
+        recordButton.attribute('disabled', 'true');
+      }
+      blob = await convertWebmBlobToMp4(blob);
+    }
+
+    downloadRecording(blob);
+  } catch (error) {
+    console.error('MP4 export failed:', error);
+    window.alert('Could not create MP4 recording. Try Chrome or Safari, then record again.');
+  } finally {
+    recordedChunks = [];
+    mediaRecorder = null;
+    isRecording = false;
+    if (recordButton) {
+      recordButton.removeAttribute('disabled');
+    }
+    updateRecordButton();
+  }
 }
 
 function updateRecordButton() {
@@ -1807,21 +1926,7 @@ function startCanvasRecording() {
   };
 
   mediaRecorder.onstop = () => {
-    if (recordStream) {
-      for (let track of recordStream.getTracks()) {
-        track.stop();
-      }
-      recordStream = null;
-    }
-
-    if (recordedChunks.length > 0) {
-      downloadRecording(new Blob(recordedChunks, { type: mimeType }), mimeType);
-    }
-
-    recordedChunks = [];
-    mediaRecorder = null;
-    isRecording = false;
-    updateRecordButton();
+    finalizeRecording(mimeType);
   };
 
   mediaRecorder.start(200);
@@ -1839,13 +1944,12 @@ function stopCanvasRecording() {
   }
 }
 
-function downloadRecording(blob, mimeType) {
-  let extension = mimeType.includes('webm') ? 'webm' : 'mp4';
+function downloadRecording(blob) {
   let stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   let url = URL.createObjectURL(blob);
   let anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `weaving-recording-${stamp}.${extension}`;
+  anchor.download = `weaving-recording-${stamp}.mp4`;
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
