@@ -21,11 +21,13 @@ let lastEmptyClickTime = 0;
 let lastEmptyClickX = 0;
 let lastEmptyClickY = 0;
 let pendingEmptyClick = null;
+let canvasMode = 'edit';
 
 const DOUBLE_CLICK_MS = 400;
 const DRAG_THRESHOLD = 4;
 const EMPTY_HIT_RADIUS = 36;
 const EMPTY_DOUBLE_CLICK_RADIUS = 12;
+const THREAD_BREAK_RADIUS = 30;
 
 let sampleDensity = 0.1;
 let withinThreadDensity = 1;
@@ -76,6 +78,9 @@ const THREAD_PHYSICS = {
   mouseSagStrength: 3.4,
   impulseStrength: 0.28,
   settleThreshold: 0.04,
+  brokenSpringK: 0.07,
+  brokenDamping: 0.8,
+  breakGravity: 0.011,
 };
 
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
@@ -273,6 +278,7 @@ function bindControls() {
   });
 
   bindColorControls();
+  bindCanvasModeControls();
   select('#save-canvas').mousePressed(saveCanvasToArchive);
   select('#download-svg').mousePressed(downloadSvg);
   select('#download-png').mousePressed(downloadPng);
@@ -281,6 +287,111 @@ function bindControls() {
   archiveListElement = document.getElementById('archive-list');
   recordButton.mousePressed(toggleCanvasRecording);
   updateRecordButton();
+}
+
+function isEditMode() {
+  return canvasMode === 'edit';
+}
+
+function isPerformanceMode() {
+  return canvasMode === 'performance';
+}
+
+function bindCanvasModeControls() {
+  select('#mode-edit').mousePressed(() => setCanvasMode('edit'));
+  select('#mode-performance').mousePressed(() => setCanvasMode('performance'));
+  updateModeUI();
+}
+
+function setCanvasMode(mode) {
+  if (canvasMode === mode) {
+    return;
+  }
+
+  if (mode === 'performance') {
+    if (editingChunkId) {
+      finishEditing();
+    }
+    selectedChunkId = null;
+    updateSelectionControls();
+  }
+
+  canvasMode = mode;
+  updateModeUI();
+}
+
+function updateModeUI() {
+  let editBtn = select('#mode-edit');
+  let perfBtn = select('#mode-performance');
+  let editHint = select('#hint-edit');
+  let perfHint = select('#hint-performance');
+
+  if (isEditMode()) {
+    editBtn.addClass('is-active');
+    perfBtn.removeClass('is-active');
+    editHint.removeClass('is-hidden');
+    perfHint.addClass('is-hidden');
+  } else {
+    editBtn.removeClass('is-active');
+    perfBtn.addClass('is-active');
+    editHint.addClass('is-hidden');
+    perfHint.removeClass('is-hidden');
+  }
+}
+
+function createThreadState() {
+  return { sag: 0, velSag: 0, broken: false, breakDrop: 0 };
+}
+
+function ensureThreadState(id) {
+  if (!threadPhysicsMap.has(id)) {
+    threadPhysicsMap.set(id, createThreadState());
+  }
+
+  return threadPhysicsMap.get(id);
+}
+
+function threadBreakRadius(textSize) {
+  return THREAD_BREAK_RADIUS * (textSize / 180);
+}
+
+function findNearestThreadHit(mx, my) {
+  let best = null;
+
+  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
+    let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
+    let radius = threadBreakRadius(textSize);
+    let threadDist = fastDistanceToThread(mx, my, thread, radius);
+
+    if (threadDist <= radius && (!best || threadDist < best.dist)) {
+      best = {
+        id: threadPhysicsId(pair[0], pair[1], layerSalt),
+        dist: threadDist,
+        textSize,
+      };
+    }
+  });
+
+  return best;
+}
+
+function breakThreadAt(mx, my) {
+  let hit = findNearestThreadHit(mx, my);
+  if (!hit) {
+    return;
+  }
+
+  let state = ensureThreadState(hit.id);
+
+  if (state.broken) {
+    state.breakDrop += hit.textSize * 0.14;
+    state.velSag += hit.textSize * 0.2;
+  } else {
+    state.broken = true;
+    state.breakDrop = hit.textSize * (0.38 + threadRandom(mx, my, hit.textSize) * 0.18);
+    state.velSag += hit.textSize * 0.48;
+    state.sag += hit.textSize * 0.1;
+  }
 }
 
 function bindColorControls() {
@@ -643,6 +754,7 @@ function draw() {
   let mouseInfluence =
     !dragState &&
     !editingChunkId &&
+    isPerformanceMode() &&
     mouseX >= 0 &&
     mouseY >= 0 &&
     mouseX <= width &&
@@ -660,34 +772,44 @@ function draw() {
     let nearMouse = false;
     let threadDist = Infinity;
 
-    if (chunkNear || (state && !threadPhysicsIsSettled(state))) {
+    if (chunkNear || (state && !threadPhysicsIsSettled(state, textSize))) {
       threadDist = fastDistanceToThread(mouseX, mouseY, thread, influenceRadius);
 
       if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.15) {
         nearMouse = true;
       }
+    } else if (isPerformanceMode() && mouseInfluence) {
+      let breakRadius = threadBreakRadius(textSize);
+      threadDist = fastDistanceToThread(mouseX, mouseY, thread, breakRadius);
+
+      if (threadDist <= breakRadius) {
+        mouseNearThreads = true;
+      }
     }
 
-    let simulate = nearMouse || (state && !threadPhysicsIsSettled(state));
+    let simulate = nearMouse || (state && !threadPhysicsIsSettled(state, textSize));
 
-    if (!simulate) {
+    if (!simulate && !state) {
       renderCurvedThread(thread, pair[0], pair[1], layerSalt);
       return;
     }
 
-    activeThreadIds.add(id);
-
     if (!state) {
-      state = { sag: 0, velSag: 0 };
+      state = createThreadState();
       threadPhysicsMap.set(id, state);
     }
 
-    if (mouseInfluence && threadDist < influenceRadius) {
-      applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside);
-      mouseNearThreads = true;
+    activeThreadIds.add(id);
+
+    if (simulate) {
+      if (mouseInfluence && threadDist < influenceRadius && !state.broken) {
+        applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside);
+        mouseNearThreads = true;
+      }
+
+      stepThreadPhysics(state, textSize);
     }
 
-    stepThreadPhysics(state);
     applyThreadPhysicsToGeometry(thread, state);
     renderCurvedThread(thread, pair[0], pair[1], layerSalt);
   });
@@ -716,7 +838,7 @@ function drawEditingPlaceholder() {
 }
 
 function drawSelectionUI() {
-  if (isRecording) {
+  if (isRecording || isPerformanceMode()) {
     return;
   }
 
@@ -746,6 +868,11 @@ function drawStatusMessage(message) {
 
 function mousePressed() {
   if (mouseX < 0 || mouseY < 0 || mouseX > width || mouseY > height) {
+    return;
+  }
+
+  if (isPerformanceMode()) {
+    breakThreadAt(mouseX, mouseY);
     return;
   }
 
@@ -863,6 +990,10 @@ function mouseReleased() {
 }
 
 function keyPressed() {
+  if (isPerformanceMode()) {
+    return;
+  }
+
   if (editingChunkId) {
     return;
   }
@@ -915,6 +1046,16 @@ function keyPressed() {
 function updateCanvasCursor() {
   let canvas = document.querySelector('#a4-frame canvas');
   if (!canvas) {
+    return;
+  }
+
+  if (isPerformanceMode()) {
+    if (mouseX < 0 || mouseY < 0 || mouseX > width || mouseY > height) {
+      canvas.style.cursor = 'default';
+      return;
+    }
+
+    canvas.style.cursor = mouseNearThreads ? 'pointer' : 'default';
     return;
   }
 
@@ -1240,8 +1381,13 @@ function pruneThreadPhysics(activeIds) {
   }
 }
 
-function threadPhysicsIsSettled(state) {
+function threadPhysicsIsSettled(state, textSize) {
   let threshold = THREAD_PHYSICS.settleThreshold;
+
+  if (state.broken) {
+    let target = state.breakDrop || textSize * 0.35;
+    return abs(state.sag - target) < threshold * 2 && abs(state.velSag) < threshold;
+  }
 
   return abs(state.sag) < threshold && abs(state.velSag) < threshold;
 }
@@ -1314,7 +1460,16 @@ function applyThreadMouseInfluence(state, thread, textSize, threadDist, influenc
   state.sag += sagPull * 0.05;
 }
 
-function stepThreadPhysics(state) {
+function stepThreadPhysics(state, textSize) {
+  if (state.broken) {
+    let target = state.breakDrop || textSize * 0.35;
+    state.velSag += (target - state.sag) * THREAD_PHYSICS.brokenSpringK;
+    state.velSag += THREAD_PHYSICS.breakGravity * textSize;
+    state.velSag *= THREAD_PHYSICS.brokenDamping;
+    state.sag += state.velSag;
+    return;
+  }
+
   state.velSag += -state.sag * THREAD_PHYSICS.springK;
   state.velSag *= THREAD_PHYSICS.damping;
   state.sag += state.velSag;

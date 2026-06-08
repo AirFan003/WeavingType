@@ -25,8 +25,17 @@
           <p class="sidebar-subtitle">Poster editor · woven typography</p>
         </header>
 
+        <section class="control-section canvas-mode-section">
+          <h2>Canvas mode</h2>
+          <div class="mode-toggle">
+            <button type="button" id="mode-edit" class="mode-btn is-active">Edit</button>
+            <button type="button" id="mode-performance" class="mode-btn">Performance</button>
+          </div>
+        </section>
+
         <div class="canvas-hints">
-          <p class="hint">Double-click the canvas to add text. Click a block to select; double-click to edit. Drag to move, corner handle to resize. Delete/Backspace removes the selection.</p>
+          <p id="hint-edit" class="hint">Double-click the canvas to add text. Click a block to select; double-click to edit. Drag to move, corner handle to resize. Delete/Backspace removes the selection.</p>
+          <p id="hint-performance" class="hint is-hidden">Hover threads to tug them. Click a strand to snip and drop it. Your changes stay on the canvas when you switch back to Edit.</p>
         </div>
 
         <section id="selection-controls" class="control-section is-hidden">
