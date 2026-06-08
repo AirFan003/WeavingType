@@ -3,13 +3,33 @@
 
 let fontEnglish;
 let fontChinese;
-let text = 'threading';
 let gTextSize = 250;
 let gLineHeight = 0;
 let textChunks = [];
 let letterSizeScale = 1;
 
+let canvasTextInput;
+let isComposing = false;
+let editingChunkId = null;
+let editRebuildTimer = null;
+let selectedChunkId = null;
+let dragState = null;
+let nextChunkId = 0;
+let lastClickTime = 0;
+let lastClickChunkId = null;
+let lastEmptyClickTime = 0;
+let lastEmptyClickX = 0;
+let lastEmptyClickY = 0;
+let pendingEmptyClick = null;
+
+const DOUBLE_CLICK_MS = 400;
+const DRAG_THRESHOLD = 4;
+const EMPTY_HIT_RADIUS = 36;
+const EMPTY_DOUBLE_CLICK_RADIUS = 12;
+
 let sampleDensity = 0.1;
+let withinThreadDensity = 1;
+let gapsThreadDensity = 1;
 let lineLayers = 10;
 let lineSpacing = 0.05;
 let layerStep = 0.01;
@@ -18,21 +38,11 @@ let edgeJitter = 0.45;
 let withinThreadSag = 0.5;
 let gapsThreadSag = 0.5;
 
-const MASK_SAMPLE_RADIUS = 3;
-const MASK_BRIGHTNESS_THRESHOLD = 4;
-const BODY_SAMPLE_COUNT = 5;
-const BODY_INSIDE_MIN_RATIO = 0.34;
 const SAG_AMOUNT_SCALE = 0.06;
 let letterSpacing = 0.065;
 let colorMode = 'monotone';
 let backgroundColor = '#0c0b0a';
 let paletteColors = ['#e8dcc8', '#c45c3e', '#6b8f71'];
-
-let textInput;
-let isComposing = false;
-let selectedChunkId = null;
-let dragState = null;
-let nextChunkId = 0;
 
 let threadPhysicsMap = new Map();
 let prevMouseX = 0;
@@ -45,14 +55,26 @@ let stitchPairCache = new Map();
 let threadGeometryCache = new Map();
 let paletteRgbCache = {};
 
+let isRecording = false;
+let mediaRecorder = null;
+let recordStream = null;
+let recordedChunks = [];
+let recordButton = null;
+let recordingIndicator = null;
+let posterArchive = [];
+let activeArchiveId = null;
+let archiveListElement = null;
+
+const RECORD_FPS = 60;
+const RECORD_BITRATE = 16_000_000;
+
 const THREAD_PHYSICS = {
-  influenceRadius: 52,
-  springK: 0.24,
-  damping: 0.76,
-  mouseSagStrength: 1.75,
-  impulseStrength: 0.62,
-  pullStrength: 0.0045,
-  settleThreshold: 0.08,
+  influenceRadius: 24,
+  springK: 0.3,
+  damping: 0.7,
+  mouseSagStrength: 3.4,
+  impulseStrength: 0.28,
+  settleThreshold: 0.04,
 };
 
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
@@ -63,6 +85,8 @@ const FONT_CHINESE =
 const FONT_CHINESE_FULL =
   'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf';
 const A4_RATIO = 297 / 210;
+const ARCHIVE_STORAGE_KEY = 'weavingTypePosterArchive';
+const MAX_ARCHIVE_ITEMS = 30;
 
 function preload() {
   fontEnglish = loadFont(FONT_ENGLISH);
@@ -79,10 +103,6 @@ function isCjkChar(char) {
 
 function fontForChar(char) {
   return isCjkChar(char) ? fontChinese : fontEnglish;
-}
-
-function hasCJK(value) {
-  return CJK_REGEX.test(value);
 }
 
 function charAdvanceForSize(char, addTrackingAfter, textSize) {
@@ -105,8 +125,9 @@ function setup() {
   syncCanvasMetrics();
 
   bindControls();
-  text = textInput.value();
-  syncChunksFromText();
+  initDefaultBlocks();
+  loadArchiveFromStorage();
+  renderArchivePanel();
   loadFullChineseFont();
 }
 
@@ -154,7 +175,9 @@ function loadFullChineseFont() {
     FONT_CHINESE_FULL,
     (loadedFont) => {
       fontChinese = loadedFont;
-      syncChunksFromText();
+      for (let chunk of textChunks) {
+        chunk.rebuildLine();
+      }
     },
     (error) => {
       console.warn('Extended Chinese font unavailable, using subset font.', error);
@@ -163,28 +186,41 @@ function loadFullChineseFont() {
 }
 
 function bindControls() {
-  textInput = select('#text-input');
+  canvasTextInput = select('#canvas-text-input');
 
-  textInput.elt.addEventListener('compositionstart', () => {
+  canvasTextInput.elt.addEventListener('compositionstart', () => {
     isComposing = true;
   });
-  textInput.elt.addEventListener('compositionend', () => {
+  canvasTextInput.elt.addEventListener('compositionend', () => {
     isComposing = false;
-    text = textInput.value();
-    syncChunksFromText();
+    applyEditingInput(true);
   });
 
-  textInput.input(() => {
+  canvasTextInput.input(() => {
     if (isComposing) {
       return;
     }
-    text = textInput.value();
-    syncChunksFromText();
+    applyEditingInput(false);
+  });
+
+  canvasTextInput.elt.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      finishEditing();
+    }
   });
 
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
     invalidateWeaveCaches();
+  });
+  bindSlider('within-density-slider', 'within-density-value', (v) => {
+    withinThreadDensity = v;
+    stitchPairCache.clear();
+  });
+  bindSlider('gaps-density-slider', 'gaps-density-value', (v) => {
+    gapsThreadDensity = v;
+    stitchPairCache.clear();
   });
   bindSlider('letter-size-slider', 'letter-size-value', (v) => {
     letterSizeScale = v;
@@ -213,15 +249,19 @@ function bindControls() {
   });
   bindSlider('stroke-slider', 'stroke-value', (v) => {
     strokeW = v;
+    invalidateThreadGeometryCache();
   });
   bindSlider('jitter-slider', 'jitter-value', (v) => {
     edgeJitter = v;
+    invalidateThreadGeometryCache();
   });
   bindSlider('within-sag-slider', 'within-sag-value', (v) => {
     withinThreadSag = v;
+    invalidateThreadGeometryCache();
   });
   bindSlider('gaps-sag-slider', 'gaps-sag-value', (v) => {
     gapsThreadSag = v;
+    invalidateThreadGeometryCache();
   });
   bindSlider('chunk-scale-slider', 'chunk-scale-value', (v) => {
     let chunk = getSelectedChunk();
@@ -232,8 +272,14 @@ function bindControls() {
   });
 
   bindColorControls();
+  select('#save-canvas').mousePressed(saveCanvasToArchive);
   select('#download-svg').mousePressed(downloadSvg);
   select('#download-png').mousePressed(downloadPng);
+  recordButton = select('#record-canvas');
+  recordingIndicator = document.getElementById('recording-indicator');
+  archiveListElement = document.getElementById('archive-list');
+  recordButton.mousePressed(toggleCanvasRecording);
+  updateRecordButton();
 }
 
 function bindColorControls() {
@@ -293,7 +339,7 @@ function updateSelectionControls() {
   }
 
   panel.removeClass('is-hidden');
-  select('#selected-chunk-label').html(`Selected: ${chunk.text}`);
+  select('#selected-chunk-label').html(`Selected: ${chunk.text || '(new text)'}`);
   select('#chunk-scale-slider').value(chunk.scale);
   select('#chunk-scale-value').html(chunk.scale.toFixed(2));
 }
@@ -347,99 +393,141 @@ function bindSlider(sliderId, labelId, onChange) {
   update();
 }
 
-function tokenizeText(value) {
-  let tokens = [];
-  let lines = value.split('\n');
-
-  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-    if (lineIdx > 0) {
-      tokens.push({ text: '', isLineBreak: true });
-    }
-
-    let line = lines[lineIdx];
-    if (!line) {
-      continue;
-    }
-
-    if (hasCJK(line)) {
-      let parts = line.split(/\s+/).filter(Boolean);
-
-      for (let part of parts) {
-        if (/^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]+$/.test(part)) {
-          for (let char of part) {
-            tokens.push({ text: char, isLineBreak: false });
-          }
-        } else {
-          tokens.push({ text: part, isLineBreak: false });
-        }
-      }
-    } else {
-      for (let word of line.match(/\S+/g) || []) {
-        tokens.push({ text: word, isLineBreak: false });
-      }
-    }
-  }
-
-  return tokens;
-}
-
-function defaultChunkPosition(tokenIndex, tokens) {
-  let row = 0;
-  let col = 0;
-
-  for (let i = 0; i < tokenIndex; i++) {
-    if (tokens[i].isLineBreak) {
-      row++;
-      col = 0;
-    } else {
-      col++;
-    }
-  }
-
+function initDefaultBlocks() {
   let ascender = max(
     fontEnglish.textBounds('Hg', 0, 0, gTextSize).h,
     fontChinese.textBounds('中', 0, 0, gTextSize).h
   );
 
-  return {
-    x: width * 0.12 + col * width * 0.2,
-    y: height * 0.18 + row * gTextSize * 1.35 + ascender * 0.2,
-  };
+  textChunks = [createTextBlock(width * 0.12, height * 0.22 + ascender * 0.2, 'threading')];
+  selectedChunkId = textChunks[0].id;
+  updateSelectionControls();
 }
 
-function syncChunksFromText() {
-  let tokens = tokenizeText(text || '');
-  let wordTokens = tokens.filter((token) => !token.isLineBreak);
-  let nextChunks = [];
-  let wordIndex = 0;
+function createTextBlock(x, y, textValue = '', scale = 1) {
+  return new TextChunk(textValue, x, y, scale);
+}
 
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].isLineBreak) {
-      continue;
-    }
+function removeTextBlock(id) {
+  textChunks = textChunks.filter((chunk) => chunk.id !== id);
 
-    let token = tokens[i];
-    let prev = textChunks[wordIndex];
-
-    if (prev && prev.text === token.text) {
-      prev.rebuildLine();
-      nextChunks.push(prev);
-    } else {
-      let pos = defaultChunkPosition(i, tokens);
-      nextChunks.push(new TextChunk(token.text, pos.x, pos.y, 1));
-    }
-
-    wordIndex++;
+  if (selectedChunkId === id) {
+    selectedChunkId = null;
+  }
+  if (editingChunkId === id) {
+    editingChunkId = null;
+    hideCanvasTextInput();
   }
 
-  textChunks = nextChunks;
   invalidateWeaveCaches();
+  updateSelectionControls();
+}
 
-  if (selectedChunkId && !getChunkById(selectedChunkId)) {
-    selectedChunkId = null;
+function getEditingChunk() {
+  return getChunkById(editingChunkId);
+}
+
+function applyEditingInput(immediate) {
+  let chunk = getEditingChunk();
+  if (!chunk) {
+    return;
+  }
+
+  chunk.text = canvasTextInput.value();
+
+  if (immediate) {
+    chunk.rebuildLine();
+    syncCanvasTextInputPosition();
+  } else {
+    scheduleEditingRebuild(chunk);
   }
 
   updateSelectionControls();
+}
+
+function scheduleEditingRebuild(chunk) {
+  if (editRebuildTimer) {
+    clearTimeout(editRebuildTimer);
+  }
+
+  editRebuildTimer = setTimeout(() => {
+    chunk.rebuildLine();
+    syncCanvasTextInputPosition();
+    editRebuildTimer = null;
+  }, 120);
+}
+
+function startEditingChunk(id) {
+  let chunk = getChunkById(id);
+  if (!chunk) {
+    return;
+  }
+
+  editingChunkId = id;
+  selectedChunkId = id;
+  canvasTextInput.value(chunk.text);
+  showCanvasTextInput();
+  syncCanvasTextInputPosition();
+  canvasTextInput.elt.focus();
+  updateSelectionControls();
+}
+
+function finishEditing() {
+  if (!editingChunkId) {
+    return;
+  }
+
+  if (editRebuildTimer) {
+    clearTimeout(editRebuildTimer);
+    editRebuildTimer = null;
+  }
+
+  let chunk = getChunkById(editingChunkId);
+  if (chunk) {
+    chunk.text = canvasTextInput.value();
+    chunk.rebuildLine();
+
+    if (!chunk.text.trim()) {
+      removeTextBlock(editingChunkId);
+    }
+  }
+
+  editingChunkId = null;
+  hideCanvasTextInput();
+  updateSelectionControls();
+}
+
+function showCanvasTextInput() {
+  canvasTextInput.elt.style.display = 'block';
+}
+
+function hideCanvasTextInput() {
+  canvasTextInput.elt.style.display = 'none';
+}
+
+function syncCanvasTextInputPosition() {
+  let chunk = getEditingChunk();
+  if (!chunk) {
+    hideCanvasTextInput();
+    return;
+  }
+
+  let canvas = document.querySelector('#a4-frame canvas');
+  if (!canvas) {
+    return;
+  }
+
+  let rect = canvas.getBoundingClientRect();
+  let scaleX = rect.width / width;
+  let scaleY = rect.height / height;
+  let textSize = chunk.textSize();
+  let bounds = chunk.getBounds();
+  let inputWidth = max(48, bounds.w + textSize * 0.35);
+
+  canvasTextInput.elt.style.left = `${chunk.x * scaleX}px`;
+  canvasTextInput.elt.style.top = `${(chunk.y - textSize * 0.72) * scaleY}px`;
+  canvasTextInput.elt.style.fontSize = `${textSize * scaleY}px`;
+  canvasTextInput.elt.style.width = `${inputWidth * scaleX}px`;
 }
 
 function getChunkById(id) {
@@ -461,9 +549,17 @@ function hitTestChunk(mx, my) {
   return null;
 }
 
+function geometryRenderSalt() {
+  return `${withinThreadSag.toFixed(3)}|${gapsThreadSag.toFixed(3)}|${edgeJitter.toFixed(3)}|${strokeW.toFixed(3)}`;
+}
+
+function invalidateThreadGeometryCache() {
+  threadGeometryCache.clear();
+}
+
 function invalidateWeaveCaches() {
   stitchPairCache.clear();
-  threadGeometryCache.clear();
+  invalidateThreadGeometryCache();
 
   for (let chunk of textChunks) {
     if (chunk.line) {
@@ -502,20 +598,6 @@ function forEachWeaveThread(onThread) {
       }
     }
   }
-}
-
-function charIndexAtPoint(x, y, masks) {
-  for (let mask of masks) {
-    if (mask.contains(x, y)) {
-      return mask.charIndex;
-    }
-  }
-
-  return null;
-}
-
-function isWithinLetterBody(a, b, line) {
-  return line.isWithinLetterBody(a, b);
 }
 
 function buildChunkInteraction(mouseInfluence) {
@@ -558,7 +640,12 @@ function draw() {
   mouseNearThreads = false;
 
   let mouseInfluence =
-    !dragState && mouseX >= 0 && mouseY >= 0 && mouseX <= width && mouseY <= height;
+    !dragState &&
+    !editingChunkId &&
+    mouseX >= 0 &&
+    mouseY >= 0 &&
+    mouseX <= width &&
+    mouseY <= height;
   let activeThreadIds = new Set();
   let chunkInteraction = buildChunkInteraction(mouseInfluence);
 
@@ -575,7 +662,7 @@ function draw() {
     if (chunkNear || (state && !threadPhysicsIsSettled(state))) {
       threadDist = fastDistanceToThread(mouseX, mouseY, thread, influenceRadius);
 
-      if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.35) {
+      if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.15) {
         nearMouse = true;
       }
     }
@@ -590,12 +677,12 @@ function draw() {
     activeThreadIds.add(id);
 
     if (!state) {
-      state = { offsetX: 0, offsetY: 0, velX: 0, velY: 0 };
+      state = { sag: 0, velSag: 0 };
       threadPhysicsMap.set(id, state);
     }
 
     if (mouseInfluence && threadDist < influenceRadius) {
-      applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius);
+      applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside);
       mouseNearThreads = true;
     }
 
@@ -607,12 +694,33 @@ function draw() {
   pruneThreadPhysics(activeThreadIds);
 
   drawSelectionUI();
+  drawEditingPlaceholder();
+  if (!isRecording) {
+    syncCanvasTextInputPosition();
+  }
   updateCanvasCursor();
 }
 
+function drawEditingPlaceholder() {
+  let chunk = getEditingChunk();
+  if (!chunk || chunk.text.length > 0) {
+    return;
+  }
+
+  let textSize = chunk.textSize();
+  noFill();
+  stroke(232, 220, 200, 120);
+  strokeWeight(1);
+  line(chunk.x, chunk.y - textSize * 0.05, chunk.x + textSize * 0.45, chunk.y - textSize * 0.05);
+}
+
 function drawSelectionUI() {
+  if (isRecording) {
+    return;
+  }
+
   let chunk = getSelectedChunk();
-  if (!chunk) {
+  if (!chunk || chunk.id === editingChunkId) {
     return;
   }
 
@@ -640,9 +748,22 @@ function mousePressed() {
     return;
   }
 
+  if (editingChunkId) {
+    let editing = getEditingChunk();
+    if (editing && editing.containsPoint(mouseX, mouseY)) {
+      canvasTextInput.elt.focus();
+      return;
+    }
+    finishEditing();
+  }
+
   let chunk = hitTestChunk(mouseX, mouseY);
 
   if (chunk) {
+    if (editingChunkId === chunk.id) {
+      return;
+    }
+
     selectedChunkId = chunk.id;
     updateSelectionControls();
 
@@ -662,12 +783,17 @@ function mousePressed() {
         chunkId: chunk.id,
         lastX: mouseX,
         lastY: mouseY,
+        startX: mouseX,
+        startY: mouseY,
+        moved: false,
       };
     }
-  } else {
-    selectedChunkId = null;
-    updateSelectionControls();
+    return;
   }
+
+  selectedChunkId = null;
+  updateSelectionControls();
+  pendingEmptyClick = { x: mouseX, y: mouseY };
 }
 
 function mouseDragged() {
@@ -681,11 +807,17 @@ function mouseDragged() {
   }
 
   if (dragState.mode === 'move') {
-    chunk.x += mouseX - dragState.lastX;
-    chunk.y += mouseY - dragState.lastY;
-    dragState.lastX = mouseX;
-    dragState.lastY = mouseY;
-    chunk.rebuildLine();
+    if (!dragState.moved && dist(mouseX, mouseY, dragState.startX, dragState.startY) > DRAG_THRESHOLD) {
+      dragState.moved = true;
+    }
+
+    if (dragState.moved) {
+      chunk.x += mouseX - dragState.lastX;
+      chunk.y += mouseY - dragState.lastY;
+      dragState.lastX = mouseX;
+      dragState.lastY = mouseY;
+      chunk.rebuildLine();
+    }
   } else if (dragState.mode === 'resize') {
     chunk.scale = constrain(dragState.startScale + (mouseY - dragState.startY) * 0.008, 0.25, 3);
     chunk.rebuildLine();
@@ -694,10 +826,62 @@ function mouseDragged() {
 }
 
 function mouseReleased() {
+  if (dragState && dragState.mode === 'move' && !dragState.moved) {
+    let chunk = getChunkById(dragState.chunkId);
+    let now = millis();
+
+    if (chunk && chunk.id === lastClickChunkId && now - lastClickTime < DOUBLE_CLICK_MS) {
+      startEditingChunk(chunk.id);
+      lastClickChunkId = null;
+      lastClickTime = 0;
+    } else {
+      lastClickChunkId = chunk ? chunk.id : null;
+      lastClickTime = now;
+    }
+  } else if (pendingEmptyClick) {
+    let now = millis();
+    let click = pendingEmptyClick;
+    let isDoubleClick =
+      now - lastEmptyClickTime < DOUBLE_CLICK_MS &&
+      dist(click.x, click.y, lastEmptyClickX, lastEmptyClickY) < EMPTY_DOUBLE_CLICK_RADIUS;
+
+    if (isDoubleClick) {
+      let newChunk = createTextBlock(click.x, click.y);
+      textChunks.push(newChunk);
+      startEditingChunk(newChunk.id);
+      lastEmptyClickTime = 0;
+    } else {
+      lastEmptyClickTime = now;
+      lastEmptyClickX = click.x;
+      lastEmptyClickY = click.y;
+    }
+  }
+
+  pendingEmptyClick = null;
   dragState = null;
 }
 
 function keyPressed() {
+  if (editingChunkId) {
+    return;
+  }
+
+  if ((keyCode === DELETE || keyCode === BACKSPACE) && selectedChunkId) {
+    removeTextBlock(selectedChunkId);
+    return false;
+  }
+
+  if (keyCode === ESCAPE) {
+    selectedChunkId = null;
+    updateSelectionControls();
+    return false;
+  }
+
+  if (keyCode === ENTER && selectedChunkId) {
+    startEditingChunk(selectedChunkId);
+    return false;
+  }
+
   let chunk = getSelectedChunk();
   if (!chunk) {
     return;
@@ -733,6 +917,11 @@ function updateCanvasCursor() {
     return;
   }
 
+  if (editingChunkId) {
+    canvas.style.cursor = 'text';
+    return;
+  }
+
   if (dragState) {
     canvas.style.cursor = dragState.mode === 'resize' ? 'nwse-resize' : 'grabbing';
     return;
@@ -756,6 +945,7 @@ function updateCanvasCursor() {
 
 function windowResized() {
   resizeArtboard();
+  syncCanvasTextInputPosition();
 }
 
 class TextChunk {
@@ -791,55 +981,16 @@ class TextChunk {
   }
 
   containsPoint(mx, my) {
-    let b = this.bounds;
-    return mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
-  }
-}
-
-class LetterMask {
-  constructor(char, textSize) {
-    this.charIndex = char.index;
-    this.textSize = textSize;
-    let bounds = char.font.textBounds(char.c, char.xp, char.yp, textSize);
-    let pad = 14;
-
-    this.offsetX = floor(bounds.x) - pad;
-    this.offsetY = floor(bounds.y) - pad;
-    this.maskWidth = ceil(bounds.w) + pad * 2;
-    this.maskHeight = ceil(bounds.h) + pad * 2;
-    this.graphics = createGraphics(this.maskWidth, this.maskHeight);
-
-    this.graphics.pixelDensity(1);
-    this.graphics.background(0);
-    this.graphics.fill(255);
-    this.graphics.noStroke();
-    this.graphics.textFont(char.font);
-    this.graphics.textSize(textSize);
-    this.graphics.textAlign(LEFT, BASELINE);
-    this.graphics.text(char.c, char.xp - this.offsetX, char.yp - this.offsetY);
-  }
-
-  contains(x, y) {
-    let localX = floor(x - this.offsetX);
-    let localY = floor(y - this.offsetY);
-
-    for (let oy = -MASK_SAMPLE_RADIUS; oy <= MASK_SAMPLE_RADIUS; oy++) {
-      for (let ox = -MASK_SAMPLE_RADIUS; ox <= MASK_SAMPLE_RADIUS; ox++) {
-        let sampleX = localX + ox;
-        let sampleY = localY + oy;
-
-        if (sampleX < 0 || sampleY < 0 || sampleX >= this.maskWidth || sampleY >= this.maskHeight) {
-          continue;
-        }
-
-        let pixel = this.graphics.get(sampleX, sampleY);
-        if (brightness(pixel) > MASK_BRIGHTNESS_THRESHOLD) {
-          return true;
-        }
-      }
+    if (!this.text) {
+      return dist(mx, my, this.x, this.y) <= EMPTY_HIT_RADIUS;
     }
 
-    return false;
+    let b = this.bounds;
+    if (b.w < 1 || b.h < 1) {
+      return dist(mx, my, this.x, this.y) <= EMPTY_HIT_RADIUS;
+    }
+
+    return mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h;
   }
 }
 
@@ -860,11 +1011,9 @@ class TextLine {
       index++;
     }
 
-    this.masks = this.chars.map((char) => new LetterMask(char, textSize));
     this.rawPoints = null;
     this.rawSample = null;
     this.segmentCache = new Map();
-    this.bodyCache = new Map();
     this.bounds = this.computeBounds();
   }
 
@@ -872,7 +1021,6 @@ class TextLine {
     this.rawPoints = null;
     this.rawSample = null;
     this.segmentCache.clear();
-    this.bodyCache.clear();
   }
 
   ensureRawPoints(sample) {
@@ -882,9 +1030,8 @@ class TextLine {
 
     this.rawSample = sample;
     this.segmentCache.clear();
-    this.bodyCache.clear();
     stitchPairCache.clear();
-    threadGeometryCache.clear();
+    invalidateThreadGeometryCache();
     this.rawPoints = [];
 
     for (let char of this.chars) {
@@ -927,35 +1074,7 @@ class TextLine {
   }
 
   isWithinLetterBody(a, b) {
-    let key = `${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}`;
-
-    if (this.bodyCache.has(key)) {
-      return this.bodyCache.get(key);
-    }
-
-    let aChar = charIndexAtPoint(a.x, a.y, this.masks);
-    let bChar = charIndexAtPoint(b.x, b.y, this.masks);
-
-    if (aChar === null || bChar === null || aChar !== bChar) {
-      this.bodyCache.set(key, false);
-      return false;
-    }
-
-    let insideCount = 0;
-
-    for (let i = 0; i < BODY_SAMPLE_COUNT; i++) {
-      let t = i / (BODY_SAMPLE_COUNT - 1);
-      let x = lerp(a.x, b.x, t);
-      let y = lerp(a.y, b.y, t);
-
-      if (charIndexAtPoint(x, y, this.masks) === aChar) {
-        insideCount++;
-      }
-    }
-
-    let inside = insideCount / BODY_SAMPLE_COUNT >= BODY_INSIDE_MIN_RATIO;
-    this.bodyCache.set(key, inside);
-    return inside;
+    return a.charIndex === b.charIndex;
   }
 
   computeBounds() {
@@ -1031,22 +1150,26 @@ function jitterPoint(x, y, amount, salt) {
   };
 }
 
-function buildStitchPairs(segment, layerSalt, density = 1) {
+function skipChanceForDensity(density) {
+  return 0.1 + (1 - min(density, 1)) * 0.4;
+}
+
+function buildStitchPairs(segment, layerSalt, withinDensity, gapsDensity) {
   let pairs = [];
   let i = 0;
-  let skipChance = 0.1 + (1 - min(density, 1)) * 0.4;
 
   while (i < segment.length) {
-    if (threadRandom(segment[i].x, segment[i].y, layerSalt) < skipChance) {
-      i++;
-      continue;
-    }
-
     let span = threadRandom(segment[i].x, segment[i].y, layerSalt + 2) > 0.62 ? 2 : 1;
     let j = min(i + span, segment.length - 1);
 
     if (j > i) {
-      pairs.push([segment[i], segment[j]]);
+      let inside = segment[i].charIndex === segment[j].charIndex;
+      let density = inside ? withinDensity : gapsDensity;
+      let skipChance = skipChanceForDensity(density);
+
+      if (threadRandom(segment[i].x, segment[i].y, layerSalt) >= skipChance) {
+        pairs.push([segment[i], segment[j]]);
+      }
     }
 
     let step = threadRandom(segment[j].x, segment[j].y, layerSalt + 4) > 0.7 ? 2 : 1;
@@ -1062,13 +1185,16 @@ function stitchPairsForSegment(segment, layerSalt) {
   }
 
   let last = segment[segment.length - 1];
-  let key = `${layerSalt}|${segment[0].x.toFixed(1)}|${segment[0].y.toFixed(1)}|${segment.length}|${last.x.toFixed(1)}|${last.y.toFixed(1)}`;
+  let key =
+    `${layerSalt}|${withinThreadDensity.toFixed(3)}|${gapsThreadDensity.toFixed(3)}|` +
+    `${segment[0].x.toFixed(1)}|${segment[0].y.toFixed(1)}|${segment.length}|` +
+    `${last.x.toFixed(1)}|${last.y.toFixed(1)}`;
 
   if (stitchPairCache.has(key)) {
     return stitchPairCache.get(key);
   }
 
-  let pairs = buildStitchPairs(segment, layerSalt);
+  let pairs = buildStitchPairs(segment, layerSalt, withinThreadDensity, gapsThreadDensity);
   stitchPairCache.set(key, pairs);
   return pairs;
 }
@@ -1084,7 +1210,7 @@ function copyThreadGeometry(thread) {
 }
 
 function getThreadGeometry(a, b, layerSalt, inside, textSize) {
-  let key = `${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}|${inside ? 1 : 0}`;
+  let key = `${geometryRenderSalt()}|${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}|${inside ? 1 : 0}`;
 
   if (!threadGeometryCache.has(key)) {
     threadGeometryCache.set(key, computeThreadGeometry(a, b, layerSalt, inside, textSize));
@@ -1116,12 +1242,7 @@ function pruneThreadPhysics(activeIds) {
 function threadPhysicsIsSettled(state) {
   let threshold = THREAD_PHYSICS.settleThreshold;
 
-  return (
-    abs(state.offsetX) < threshold &&
-    abs(state.offsetY) < threshold &&
-    abs(state.velX) < threshold &&
-    abs(state.velY) < threshold
-  );
+  return abs(state.sag) < threshold && abs(state.velSag) < threshold;
 }
 
 function threadInfluenceRadius(textSize) {
@@ -1179,39 +1300,27 @@ function fastDistanceToThread(mx, my, thread, influenceRadius) {
   return distanceToQuadraticBezier(mx, my, thread.start, thread.ctrl, thread.end);
 }
 
-function applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius) {
+function applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside) {
   if (threadDist > influenceRadius) {
     return;
   }
 
   let influence = sq(1 - threadDist / influenceRadius);
-  let sagPull = influence * THREAD_PHYSICS.mouseSagStrength * textSize * 0.09;
+  let looseness = inside ? 0.9 : 1.25;
+  let sagPull = influence * THREAD_PHYSICS.mouseSagStrength * textSize * 0.13 * looseness;
 
-  state.velY += sagPull * 0.18 + mouseVelY * influence * THREAD_PHYSICS.impulseStrength * 0.14;
-  state.velX += mouseVelX * influence * THREAD_PHYSICS.impulseStrength * 0.1;
-  state.offsetY += sagPull * 0.06;
-
-  let pull = influence * THREAD_PHYSICS.pullStrength;
-  state.velX += (mouseX - thread.ctrl.x) * pull;
-  state.velY += (mouseY - thread.ctrl.y) * pull * 1.35;
+  state.velSag += sagPull * 0.24 + mouseVelY * influence * THREAD_PHYSICS.impulseStrength * 0.08;
+  state.sag += sagPull * 0.05;
 }
 
 function stepThreadPhysics(state) {
-  state.velX += -state.offsetX * THREAD_PHYSICS.springK;
-  state.velY += -state.offsetY * THREAD_PHYSICS.springK;
-  state.velX *= THREAD_PHYSICS.damping;
-  state.velY *= THREAD_PHYSICS.damping;
-  state.offsetX += state.velX;
-  state.offsetY += state.velY;
+  state.velSag += -state.sag * THREAD_PHYSICS.springK;
+  state.velSag *= THREAD_PHYSICS.damping;
+  state.sag += state.velSag;
 }
 
 function applyThreadPhysicsToGeometry(thread, state) {
-  thread.ctrl.x += state.offsetX;
-  thread.ctrl.y += state.offsetY;
-  thread.start.x += state.offsetX * 0.12;
-  thread.start.y += state.offsetY * 0.18;
-  thread.end.x += state.offsetX * 0.12;
-  thread.end.y += state.offsetY * 0.18;
+  thread.ctrl.y += state.sag;
 }
 
 function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
@@ -1296,13 +1405,284 @@ function collectSvgPaths() {
 }
 
 function makeExportBasename() {
-  let slug = text
-    .trim()
+  let slug = textChunks
+    .map((chunk) => chunk.text.trim())
+    .filter(Boolean)
+    .join('-')
     .slice(0, 30)
     .replace(/[^\w\u4e00-\u9fff-]+/gu, '-')
     .replace(/^-+|-+$/g, '');
 
   return `weaving-${slug || 'type'}`;
+}
+
+function formatArchiveDate(isoString) {
+  let date = new Date(isoString);
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function setSliderControl(sliderId, labelId, value, labelText) {
+  select(`#${sliderId}`).value(value);
+  select(`#${labelId}`).html(labelText);
+}
+
+function captureCurrentSettings() {
+  return {
+    letterSizeScale,
+    letterSpacing,
+    sampleDensity,
+    withinThreadDensity,
+    gapsThreadDensity,
+    lineLayers,
+    lineSpacing,
+    layerStep,
+    strokeW,
+    edgeJitter,
+    withinThreadSag,
+    gapsThreadSag,
+    colorMode,
+    backgroundColor,
+    paletteColors: [...paletteColors],
+  };
+}
+
+function applySettingsFromSnapshot(settings) {
+  letterSizeScale = settings.letterSizeScale;
+  letterSpacing = settings.letterSpacing;
+  sampleDensity = settings.sampleDensity;
+  withinThreadDensity = settings.withinThreadDensity;
+  gapsThreadDensity = settings.gapsThreadDensity;
+  lineLayers = settings.lineLayers;
+  lineSpacing = settings.lineSpacing;
+  layerStep = settings.layerStep;
+  strokeW = settings.strokeW;
+  edgeJitter = settings.edgeJitter;
+  withinThreadSag = settings.withinThreadSag;
+  gapsThreadSag = settings.gapsThreadSag;
+  colorMode = settings.colorMode;
+  backgroundColor = settings.backgroundColor;
+  paletteColors = [...settings.paletteColors];
+
+  setSliderControl('letter-size-slider', 'letter-size-value', letterSizeScale, letterSizeScale.toFixed(2));
+  setSliderControl('letter-spacing-slider', 'letter-spacing-value', letterSpacing, letterSpacing.toFixed(3));
+  setSliderControl('density-slider', 'density-value', sampleDensity, sampleDensity.toFixed(2));
+  setSliderControl('within-density-slider', 'within-density-value', withinThreadDensity, withinThreadDensity.toFixed(2));
+  setSliderControl('gaps-density-slider', 'gaps-density-value', gapsThreadDensity, gapsThreadDensity.toFixed(2));
+  setSliderControl('layers-slider', 'layers-value', lineLayers, String(lineLayers));
+  setSliderControl('spacing-slider', 'spacing-value', lineSpacing, lineSpacing.toFixed(2));
+  setSliderControl('step-slider', 'step-value', layerStep, layerStep.toFixed(3));
+  setSliderControl('stroke-slider', 'stroke-value', strokeW, strokeW.toFixed(2));
+  setSliderControl('jitter-slider', 'jitter-value', edgeJitter, edgeJitter.toFixed(2));
+  setSliderControl('within-sag-slider', 'within-sag-value', withinThreadSag, withinThreadSag.toFixed(2));
+  setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
+
+  select('#color-mode').value(colorMode);
+  select('#bg-color').value(backgroundColor);
+  select('#color-1').value(paletteColors[0]);
+  select('#color-2').value(paletteColors[1]);
+  select('#color-3').value(paletteColors[2]);
+  updateColorControlVisibility();
+  syncCanvasMetrics();
+  invalidateWeaveCaches();
+  stitchPairCache.clear();
+  invalidateThreadGeometryCache();
+}
+
+function serializePosterState() {
+  return {
+    canvas: { width, height },
+    chunks: textChunks.map((chunk) => ({
+      text: chunk.text,
+      x: chunk.x,
+      y: chunk.y,
+      scale: chunk.scale,
+    })),
+    settings: captureCurrentSettings(),
+  };
+}
+
+function capturePosterThumbnail() {
+  let canvas = getRecordCanvasElement();
+  if (!canvas) {
+    return '';
+  }
+
+  let thumbWidth = 220;
+  let thumbHeight = max(1, floor(thumbWidth * (height / width)));
+  let offscreen = document.createElement('canvas');
+  offscreen.width = thumbWidth;
+  offscreen.height = thumbHeight;
+  offscreen.getContext('2d').drawImage(canvas, 0, 0, thumbWidth, thumbHeight);
+  return offscreen.toDataURL('image/jpeg', 0.78);
+}
+
+function posterDisplayName(chunks) {
+  let label = chunks
+    .map((chunk) => chunk.text.trim())
+    .filter(Boolean)
+    .join(' · ')
+    .slice(0, 48);
+
+  return label || 'Untitled poster';
+}
+
+function loadArchiveFromStorage() {
+  try {
+    let raw = localStorage.getItem(ARCHIVE_STORAGE_KEY);
+    posterArchive = raw ? JSON.parse(raw) : [];
+  } catch (error) {
+    console.warn('Could not load poster archive.', error);
+    posterArchive = [];
+  }
+}
+
+function persistArchiveToStorage() {
+  try {
+    localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(posterArchive));
+  } catch (error) {
+    console.warn('Could not save poster archive.', error);
+    window.alert('Could not save poster. Your browser storage may be full.');
+  }
+}
+
+function saveCanvasToArchive() {
+  if (!fontsReady()) {
+    return;
+  }
+
+  if (editingChunkId) {
+    finishEditing();
+  }
+
+  let snapshot = serializePosterState();
+  let poster = {
+    id: `poster-${Date.now()}`,
+    name: posterDisplayName(snapshot.chunks),
+    savedAt: new Date().toISOString(),
+    thumbnail: capturePosterThumbnail(),
+    ...snapshot,
+  };
+
+  posterArchive.unshift(poster);
+  posterArchive = posterArchive.slice(0, MAX_ARCHIVE_ITEMS);
+  activeArchiveId = poster.id;
+  persistArchiveToStorage();
+  renderArchivePanel();
+}
+
+function scaleChunkPosition(x, y, savedCanvas) {
+  if (!savedCanvas || !savedCanvas.width || !savedCanvas.height) {
+    return { x, y };
+  }
+
+  return {
+    x: x * (width / savedCanvas.width),
+    y: y * (height / savedCanvas.height),
+  };
+}
+
+function loadPosterFromArchive(posterId) {
+  let poster = posterArchive.find((entry) => entry.id === posterId);
+  if (!poster) {
+    return;
+  }
+
+  if (editingChunkId) {
+    finishEditing();
+  }
+
+  applySettingsFromSnapshot(poster.settings);
+
+  textChunks = poster.chunks.map((chunk) => {
+    let position = scaleChunkPosition(chunk.x, chunk.y, poster.canvas);
+    return createTextBlock(position.x, position.y, chunk.text, chunk.scale);
+  });
+
+  selectedChunkId = textChunks.length > 0 ? textChunks[0].id : null;
+  activeArchiveId = poster.id;
+  invalidateWeaveCaches();
+  updateSelectionControls();
+  renderArchivePanel();
+}
+
+function deletePosterFromArchive(posterId) {
+  posterArchive = posterArchive.filter((entry) => entry.id !== posterId);
+
+  if (activeArchiveId === posterId) {
+    activeArchiveId = null;
+  }
+
+  persistArchiveToStorage();
+  renderArchivePanel();
+}
+
+function renderArchivePanel() {
+  if (!archiveListElement) {
+    return;
+  }
+
+  archiveListElement.innerHTML = '';
+
+  if (posterArchive.length === 0) {
+    let empty = document.createElement('p');
+    empty.className = 'archive-empty';
+    empty.textContent = 'No saved posters yet. Click Save canvas to store your current artboard here.';
+    archiveListElement.appendChild(empty);
+    return;
+  }
+
+  for (let poster of posterArchive) {
+    let item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'archive-item';
+    if (poster.id === activeArchiveId) {
+      item.classList.add('is-active');
+    }
+
+    let thumb = document.createElement('img');
+    thumb.className = 'archive-thumb';
+    thumb.src = poster.thumbnail;
+    thumb.alt = poster.name;
+
+    let meta = document.createElement('div');
+    meta.className = 'archive-meta';
+
+    let name = document.createElement('p');
+    name.className = 'archive-name';
+    name.textContent = poster.name;
+
+    let date = document.createElement('p');
+    date.className = 'archive-date';
+    date.textContent = formatArchiveDate(poster.savedAt);
+
+    meta.appendChild(name);
+    meta.appendChild(date);
+
+    let deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'archive-delete';
+    deleteButton.setAttribute('aria-label', `Delete ${poster.name}`);
+    deleteButton.textContent = '×';
+
+    deleteButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      deletePosterFromArchive(poster.id);
+    });
+
+    item.addEventListener('click', () => {
+      loadPosterFromArchive(poster.id);
+    });
+
+    item.appendChild(thumb);
+    item.appendChild(meta);
+    item.appendChild(deleteButton);
+    archiveListElement.appendChild(item);
+  }
 }
 
 function makeSvgFilename() {
@@ -1340,6 +1720,132 @@ function downloadSvg() {
   let anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = makeSvgFilename();
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+function getRecordCanvasElement() {
+  return document.querySelector('#a4-frame canvas');
+}
+
+function getRecordingMimeType() {
+  let types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+
+  for (let type of types) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  return '';
+}
+
+function updateRecordButton() {
+  if (!recordButton) {
+    return;
+  }
+
+  if (isRecording) {
+    recordButton.html('Stop recording');
+    recordButton.addClass('is-recording');
+    if (recordingIndicator) {
+      recordingIndicator.classList.remove('is-hidden');
+    }
+  } else {
+    recordButton.html('Record canvas');
+    recordButton.removeClass('is-recording');
+    if (recordingIndicator) {
+      recordingIndicator.classList.add('is-hidden');
+    }
+  }
+}
+
+function toggleCanvasRecording() {
+  if (isRecording) {
+    stopCanvasRecording();
+  } else {
+    startCanvasRecording();
+  }
+}
+
+function startCanvasRecording() {
+  if (isRecording) {
+    return;
+  }
+
+  if (editingChunkId) {
+    finishEditing();
+  }
+
+  if (!getRecordingMimeType()) {
+    window.alert('Video recording is not supported in this browser.');
+    return;
+  }
+
+  let canvas = getRecordCanvasElement();
+  if (!canvas || typeof canvas.captureStream !== 'function') {
+    window.alert('Canvas recording is not supported in this browser.');
+    return;
+  }
+
+  hideCanvasTextInput();
+  recordedChunks = [];
+  recordStream = canvas.captureStream(RECORD_FPS);
+
+  let mimeType = getRecordingMimeType();
+  mediaRecorder = new MediaRecorder(recordStream, {
+    mimeType,
+    videoBitsPerSecond: RECORD_BITRATE,
+  });
+
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      recordedChunks.push(event.data);
+    }
+  };
+
+  mediaRecorder.onstop = () => {
+    if (recordStream) {
+      for (let track of recordStream.getTracks()) {
+        track.stop();
+      }
+      recordStream = null;
+    }
+
+    if (recordedChunks.length > 0) {
+      downloadRecording(new Blob(recordedChunks, { type: mimeType }), mimeType);
+    }
+
+    recordedChunks = [];
+    mediaRecorder = null;
+    isRecording = false;
+    updateRecordButton();
+  };
+
+  mediaRecorder.start(200);
+  isRecording = true;
+  updateRecordButton();
+}
+
+function stopCanvasRecording() {
+  if (!isRecording || !mediaRecorder) {
+    return;
+  }
+
+  if (mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+}
+
+function downloadRecording(blob, mimeType) {
+  let extension = mimeType.includes('webm') ? 'webm' : 'mp4';
+  let stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  let url = URL.createObjectURL(blob);
+  let anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `weaving-recording-${stamp}.${extension}`;
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);

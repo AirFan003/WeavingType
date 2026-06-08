@@ -12,10 +12,10 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=dev" />
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/p5.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.0/lib/addons/p5.dom.min.js"></script>
-    <script src="sketch.js"></script>
+    <script src="sketch.js?v=dev"></script>
   </head>
   <body>
     <div id="app">
@@ -25,17 +25,15 @@
           <p class="sidebar-subtitle">Poster editor · woven typography</p>
         </header>
 
-        <div class="text-input-block">
-          <label for="text-input">Text</label>
-          <textarea id="text-input" rows="5" spellcheck="false">threading</textarea>
-          <p class="hint">Words are movable chunks (click, drag, corner to resize). Hover the canvas to tug the threads — they sag and spring back.</p>
+        <div class="canvas-hints">
+          <p class="hint">Double-click the canvas to add text. Click a block to select; double-click to edit. Drag to move, corner handle to resize. Delete/Backspace removes the selection.</p>
         </div>
 
         <section id="selection-controls" class="control-section is-hidden">
           <h2>Selection</h2>
           <p id="selected-chunk-label" class="selection-label">Selected: —</p>
           <div class="control-row">
-            <label for="chunk-scale-slider">Word size</label>
+            <label for="chunk-scale-slider">Text size</label>
             <div class="control-input">
               <input id="chunk-scale-slider" type="range" min="0.25" max="3" step="0.05" value="1" />
               <span id="chunk-scale-value" class="control-value">1.00</span>
@@ -68,6 +66,20 @@
             <div class="control-input">
               <input id="density-slider" type="range" min="0.02" max="0.35" step="0.01" value="0.1" />
               <span id="density-value" class="control-value">0.10</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="within-density-slider">Density within letters</label>
+            <div class="control-input">
+              <input id="within-density-slider" type="range" min="0" max="1" step="0.05" value="1" />
+              <span id="within-density-value" class="control-value">1.00</span>
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="gaps-density-slider">Density within gaps</label>
+            <div class="control-input">
+              <input id="gaps-density-slider" type="range" min="0" max="1" step="0.05" value="1" />
+              <span id="gaps-density-value" class="control-value">1.00</span>
             </div>
           </div>
           <div class="control-row">
@@ -113,7 +125,7 @@
             </div>
           </div>
           <div class="control-row">
-            <label for="gaps-sag-slider">Sag in gaps</label>
+            <label for="gaps-sag-slider">Sag within gaps</label>
             <div class="control-input">
               <input id="gaps-sag-slider" type="range" min="0" max="2" step="0.05" value="0.5" />
               <span id="gaps-sag-value" class="control-value">0.50</span>
@@ -162,15 +174,38 @@
         <section class="control-section export-section">
           <h2>Export</h2>
           <div class="export-actions">
+            <button type="button" id="save-canvas" class="btn btn-primary">Save canvas</button>
+            <button type="button" id="record-canvas" class="btn btn-record">Record canvas</button>
             <button type="button" id="download-svg" class="btn">Download SVG</button>
             <button type="button" id="download-png" class="btn">Download PNG</button>
           </div>
+          <p class="hint export-hint">Save stores your poster in the archive on the right. Recording captures the artboard only — your mouse cursor is not included.</p>
         </section>
       </aside>
 
       <main id="canvas-panel">
-        <div id="a4-frame" aria-label="A4 artboard"></div>
+        <div id="a4-frame" aria-label="A4 artboard">
+          <div id="recording-indicator" class="is-hidden" aria-hidden="true">
+            <span class="recording-dot"></span>
+            <span>REC</span>
+          </div>
+          <input
+            id="canvas-text-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="Edit text on canvas"
+          />
+        </div>
       </main>
+
+      <aside id="archive-panel">
+        <header class="archive-header">
+          <h2>Saved posters</h2>
+          <p class="archive-subtitle">Your canvas archive</p>
+        </header>
+        <div id="archive-list" class="archive-list"></div>
+      </aside>
     </div>
   </body>
 </html>

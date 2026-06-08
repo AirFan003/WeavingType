@@ -9,5 +9,5 @@ if lsof -i :"$PORT" >/dev/null 2>&1; then
 fi
 
 echo "Starting Weaving Type at http://127.0.0.1:$PORT/"
-echo "Use http:// (not https://). Keep this terminal open while you work."
-python3 -m http.server "$PORT" --bind 127.0.0.1
+echo "Use http://127.0.0.1:$PORT/ (not https:// or file://). Keep this terminal open while you work."
+python3 dev-server.py
