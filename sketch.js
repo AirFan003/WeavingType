@@ -44,6 +44,8 @@ const SAG_AMOUNT_SCALE = 0.06;
 let letterSpacing = 0.065;
 let colorMode = 'monotone';
 let backgroundColor = '#0c0b0a';
+let backgroundImage = null;
+let backgroundImageDataUrl = null;
 let paletteColors = ['#e8dcc8', '#c45c3e', '#6b8f71'];
 
 let threadPhysicsMap = new Map();
@@ -278,6 +280,7 @@ function bindControls() {
   });
 
   bindColorControls();
+  bindBackgroundImageControls();
   bindCanvasModeControls();
   select('#save-canvas').mousePressed(saveCanvasToArchive);
   select('#download-svg').mousePressed(downloadSvg);
@@ -416,6 +419,150 @@ function bindColorControls() {
     });
     paletteColors[index] = picker.value();
   }
+}
+
+function bindBackgroundImageControls() {
+  let fileInput = select('#bg-image-input');
+  let uploadButton = select('#bg-image-upload');
+  let clearButton = select('#bg-image-clear');
+
+  uploadButton.mousePressed(() => {
+    fileInput.elt.click();
+  });
+
+  fileInput.elt.addEventListener('change', () => {
+    let file = fileInput.elt.files && fileInput.elt.files[0];
+    if (!file) {
+      return;
+    }
+
+    setBackgroundImageFromFile(file, () => {
+      fileInput.elt.value = '';
+    });
+  });
+
+  clearButton.mousePressed(clearBackgroundImage);
+  updateBackgroundImageUI();
+}
+
+function updateBackgroundImageUI() {
+  let clearButton = select('#bg-image-clear');
+  let label = select('#bg-image-label');
+
+  if (backgroundImageDataUrl) {
+    clearButton.removeClass('is-hidden');
+    label.removeClass('is-hidden');
+    label.html('Background image loaded');
+  } else {
+    clearButton.addClass('is-hidden');
+    label.addClass('is-hidden');
+    label.html('');
+  }
+}
+
+function setBackgroundImageFromFile(file, onComplete) {
+  if (!file.type.startsWith('image/')) {
+    window.alert('Please choose an image file.');
+    if (onComplete) {
+      onComplete();
+    }
+    return;
+  }
+
+  let reader = new FileReader();
+  reader.onload = () => {
+    optimizeBackgroundImageDataUrl(reader.result, (dataUrl) => {
+      loadBackgroundImageFromDataUrl(dataUrl);
+      if (onComplete) {
+        onComplete();
+      }
+    });
+  };
+  reader.onerror = () => {
+    window.alert('Could not read that image file.');
+    if (onComplete) {
+      onComplete();
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function optimizeBackgroundImageDataUrl(dataUrl, onReady) {
+  let img = new Image();
+  img.onload = () => {
+    let maxDim = max(width, height) * 2;
+    let scale = min(1, maxDim / max(img.width, img.height));
+    let targetW = max(1, floor(img.width * scale));
+    let targetH = max(1, floor(img.height * scale));
+    let canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    canvas.getContext('2d').drawImage(img, 0, 0, targetW, targetH);
+    onReady(canvas.toDataURL('image/jpeg', 0.88));
+  };
+  img.onerror = () => {
+    onReady(dataUrl);
+  };
+  img.src = dataUrl;
+}
+
+function loadBackgroundImageFromDataUrl(dataUrl) {
+  if (!dataUrl) {
+    backgroundImage = null;
+    backgroundImageDataUrl = null;
+    updateBackgroundImageUI();
+    return;
+  }
+
+  loadImage(
+    dataUrl,
+    (img) => {
+      backgroundImage = img;
+      backgroundImageDataUrl = dataUrl;
+      updateBackgroundImageUI();
+    },
+    (error) => {
+      console.warn('Could not load background image.', error);
+      backgroundImage = null;
+      backgroundImageDataUrl = null;
+      updateBackgroundImageUI();
+    }
+  );
+}
+
+function clearBackgroundImage() {
+  backgroundImage = null;
+  backgroundImageDataUrl = null;
+  select('#bg-image-input').elt.value = '';
+  updateBackgroundImageUI();
+}
+
+function getBackgroundImageCoverRect(imgW, imgH) {
+  let scale = max(width / imgW, height / imgH);
+  let drawW = imgW * scale;
+  let drawH = imgH * scale;
+
+  return {
+    x: (width - drawW) / 2,
+    y: (height - drawH) / 2,
+    w: drawW,
+    h: drawH,
+  };
+}
+
+function drawCanvasBackground() {
+  let bg = hexToRgb(backgroundColor);
+  background(bg.r, bg.g, bg.b);
+
+  if (!backgroundImage || !backgroundImage.width) {
+    return;
+  }
+
+  let rect = getBackgroundImageCoverRect(backgroundImage.width, backgroundImage.height);
+  push();
+  noStroke();
+  image(backgroundImage, rect.x, rect.y, rect.w, rect.h);
+  pop();
 }
 
 function updateColorControlVisibility() {
@@ -737,8 +884,7 @@ function buildChunkInteraction(mouseInfluence) {
 }
 
 function draw() {
-  let bg = hexToRgb(backgroundColor);
-  background(bg.r, bg.g, bg.b);
+  drawCanvasBackground();
 
   if (!fontsReady()) {
     drawStatusMessage('Loading fonts…');
@@ -1603,6 +1749,7 @@ function captureCurrentSettings() {
     gapsThreadSag,
     colorMode,
     backgroundColor,
+    backgroundImageDataUrl,
     paletteColors: [...paletteColors],
   };
 }
@@ -1643,6 +1790,7 @@ function applySettingsFromSnapshot(settings) {
   select('#color-2').value(paletteColors[1]);
   select('#color-3').value(paletteColors[2]);
   updateColorControlVisibility();
+  loadBackgroundImageFromDataUrl(settings.backgroundImageDataUrl || null);
   syncCanvasMetrics();
   invalidateWeaveCaches();
   stitchPairCache.clear();
@@ -1853,13 +2001,24 @@ function downloadPng() {
   saveCanvas(makeExportBasename(), 'png');
 }
 
+function buildSvgBackgroundMarkup() {
+  let markup = `  <rect width="100%" height="100%" fill="${backgroundColor}"/>`;
+
+  if (backgroundImage && backgroundImageDataUrl) {
+    let rect = getBackgroundImageCoverRect(backgroundImage.width, backgroundImage.height);
+    markup += `\n  <image href="${backgroundImageDataUrl}" x="${rect.x}" y="${rect.y}" width="${rect.w}" height="${rect.h}" preserveAspectRatio="xMidYMid slice"/>`;
+  }
+
+  return markup;
+}
+
 function buildSvgDocument() {
   let paths = collectSvgPaths();
 
   return (
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    `  <rect width="100%" height="100%" fill="${backgroundColor}"/>\n` +
+    `${buildSvgBackgroundMarkup()}\n` +
     `  ${paths.join('\n  ')}\n` +
     '</svg>'
   );

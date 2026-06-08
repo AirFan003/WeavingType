@@ -264,6 +264,24 @@ input[type='color'] {
   border-color: rgba(232, 220, 200, 0.5);
 }
 
+.btn-compact {
+  width: auto;
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.bg-image-controls {
+  flex-wrap: wrap;
+}
+
+.bg-image-label {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.45;
+}
+
 .export-hint {
   margin-top: 10px;
 }

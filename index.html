@@ -173,10 +173,19 @@
             </div>
           </div>
           <div class="control-row">
-            <label for="bg-color">Background</label>
+            <label for="bg-color">Background color</label>
             <div class="control-input">
               <input id="bg-color" type="color" value="#0c0b0a" />
             </div>
+          </div>
+          <div class="control-row">
+            <label for="bg-image-input">Background image</label>
+            <div class="control-input bg-image-controls">
+              <input id="bg-image-input" type="file" accept="image/*" hidden />
+              <button type="button" id="bg-image-upload" class="btn btn-compact">Upload image</button>
+              <button type="button" id="bg-image-clear" class="btn btn-compact is-hidden">Remove</button>
+            </div>
+            <p id="bg-image-label" class="bg-image-label is-hidden">Background image loaded</p>
           </div>
         </section>
 
