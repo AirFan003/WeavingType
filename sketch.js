@@ -326,19 +326,13 @@ function setCanvasMode(mode) {
 function updateModeUI() {
   let editBtn = select('#mode-edit');
   let perfBtn = select('#mode-performance');
-  let editHint = select('#hint-edit');
-  let perfHint = select('#hint-performance');
 
   if (isEditMode()) {
     editBtn.addClass('is-active');
     perfBtn.removeClass('is-active');
-    editHint.removeClass('is-hidden');
-    perfHint.addClass('is-hidden');
   } else {
     editBtn.removeClass('is-active');
     perfBtn.addClass('is-active');
-    editHint.addClass('is-hidden');
-    perfHint.removeClass('is-hidden');
   }
 }
 

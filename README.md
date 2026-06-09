@@ -1,4 +1,4 @@
-# Weaving Type
+# Woven Type
 
 Interactive generative typography sketch — letters stitched together with woven horizontal lines.
 

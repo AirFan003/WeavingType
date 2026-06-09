@@ -45,14 +45,12 @@ body {
   opacity: 0.5;
 }
 
-.canvas-hints {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .canvas-mode-section {
   margin-bottom: 4px;
+}
+
+.canvas-mode-hint {
+  margin-top: 10px;
 }
 
 .mode-toggle {
