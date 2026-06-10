@@ -203,7 +203,7 @@ body {
   justify-content: space-between;
   gap: 12px;
   padding: 0 16px;
-  border-radius: 999px;
+  border-radius: 20px;
   background: rgba(255, 255, 255, 0.055);
   pointer-events: none;
   overflow: hidden;
@@ -222,7 +222,7 @@ body {
   width: 0%;
   min-width: 0;
   background: rgba(255, 255, 255, 0.11);
-  border-radius: 999px;
+  border-radius: 20px;
   overflow: hidden;
   pointer-events: none;
   z-index: 1;
@@ -249,17 +249,6 @@ body {
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: rgba(255, 255, 255, 0.92);
-}
-
-.thick-slider__indicator {
-  position: absolute;
-  right: var(--indicator-inset, 8px);
-  top: 50%;
-  width: 1px;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.88);
-  transform: translateY(-50%);
-  pointer-events: none;
 }
 
 .thick-slider__input {

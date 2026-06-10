@@ -652,11 +652,6 @@ function enhanceThickSliders() {
     let fill = document.createElement('div');
     fill.className = 'thick-slider__fill';
 
-    let indicator = document.createElement('span');
-    indicator.className = 'thick-slider__indicator';
-    indicator.setAttribute('aria-hidden', 'true');
-    fill.appendChild(indicator);
-
     let faceLabel = document.createElement('span');
     faceLabel.className = 'thick-slider__label';
     faceLabel.textContent = labelText;
@@ -690,10 +685,6 @@ function syncRangeSliderFill(sliderEl) {
     if (fill) {
       fill.style.width = `${pct}%`;
       fill.classList.toggle('is-empty', pct <= 0.5);
-
-      let fillWidth = fill.offsetWidth;
-      let inset = fillWidth <= 0 ? 8 : Math.min(8, Math.max(3, fillWidth * 0.28));
-      fill.style.setProperty('--indicator-inset', `${inset}px`);
     }
     return;
   }
