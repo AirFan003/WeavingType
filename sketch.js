@@ -218,6 +218,8 @@ function bindControls() {
     }
   });
 
+  enhanceThickSliders();
+
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
     invalidateWeaveCaches();
@@ -290,6 +292,7 @@ function bindControls() {
   archiveListElement = document.getElementById('archive-list');
   recordButton.mousePressed(toggleCanvasRecording);
   updateRecordButton();
+  syncAllRangeSliderFills();
 }
 
 function isEditMode() {
@@ -626,6 +629,84 @@ function hexToRgb(hex) {
   };
 }
 
+function enhanceThickSliders() {
+  for (let row of document.querySelectorAll('.control-row')) {
+    let input = row.querySelector('input[type="range"]');
+    if (!input || input.closest('.thick-slider')) {
+      continue;
+    }
+
+    let label = row.querySelector('label');
+    let valueEl = row.querySelector('.control-value');
+    if (!label || !valueEl) {
+      continue;
+    }
+
+    let labelText = label.textContent.trim();
+    let wrapper = document.createElement('div');
+    wrapper.className = 'thick-slider';
+
+    let face = document.createElement('div');
+    face.className = 'thick-slider__face';
+
+    let fill = document.createElement('div');
+    fill.className = 'thick-slider__fill';
+
+    let indicator = document.createElement('span');
+    indicator.className = 'thick-slider__indicator';
+    indicator.setAttribute('aria-hidden', 'true');
+    fill.appendChild(indicator);
+
+    let faceLabel = document.createElement('span');
+    faceLabel.className = 'thick-slider__label';
+    faceLabel.textContent = labelText;
+
+    let faceValue = document.createElement('span');
+    faceValue.className = 'thick-slider__value';
+    faceValue.id = valueEl.id;
+
+    face.append(fill, faceLabel, faceValue);
+
+    input.classList.add('thick-slider__input');
+    input.setAttribute('aria-label', labelText);
+    wrapper.append(face, input);
+
+    let controlInput = row.querySelector('.control-input');
+    controlInput.innerHTML = '';
+    controlInput.appendChild(wrapper);
+    label.remove();
+  }
+}
+
+function syncRangeSliderFill(sliderEl) {
+  let min = parseFloat(sliderEl.min) || 0;
+  let max = parseFloat(sliderEl.max) || 100;
+  let value = parseFloat(sliderEl.value) || 0;
+  let pct = max === min ? 0 : ((value - min) / (max - min)) * 100;
+
+  let wrapper = sliderEl.closest('.thick-slider');
+  if (wrapper) {
+    let fill = wrapper.querySelector('.thick-slider__fill');
+    if (fill) {
+      fill.style.width = `${pct}%`;
+      fill.classList.toggle('is-empty', pct <= 0.5);
+
+      let fillWidth = fill.offsetWidth;
+      let inset = fillWidth <= 0 ? 8 : Math.min(8, Math.max(3, fillWidth * 0.28));
+      fill.style.setProperty('--indicator-inset', `${inset}px`);
+    }
+    return;
+  }
+
+  sliderEl.style.setProperty('--range-progress', `${pct}%`);
+}
+
+function syncAllRangeSliderFills() {
+  for (let input of document.querySelectorAll('input[type="range"]')) {
+    syncRangeSliderFill(input);
+  }
+}
+
 function bindSlider(sliderId, labelId, onChange) {
   let slider = select(`#${sliderId}`);
   let label = select(`#${labelId}`);
@@ -639,6 +720,7 @@ function bindSlider(sliderId, labelId, onChange) {
             sliderId === 'step-slider' || sliderId === 'letter-spacing-slider' ? 3 : 2
           )
     );
+    syncRangeSliderFill(slider.elt);
     onChange(value);
   };
 
@@ -1786,6 +1868,7 @@ function applySettingsFromSnapshot(settings) {
   updateColorControlVisibility();
   loadBackgroundImageFromDataUrl(settings.backgroundImageDataUrl || null);
   syncCanvasMetrics();
+  syncAllRangeSliderFills();
   invalidateWeaveCaches();
   stitchPairCache.clear();
   invalidateThreadGeometryCache();

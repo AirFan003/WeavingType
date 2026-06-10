@@ -198,18 +198,21 @@
       </aside>
 
       <main id="canvas-panel">
-        <div id="a4-frame" aria-label="A4 artboard">
-          <div id="recording-indicator" class="is-hidden" aria-hidden="true">
-            <span class="recording-dot"></span>
-            <span>REC</span>
+        <div class="canvas-stage">
+          <div id="a4-frame" aria-label="A4 artboard">
+            <div id="recording-indicator" class="is-hidden" aria-hidden="true">
+              <span class="recording-dot"></span>
+              <span>REC</span>
+            </div>
+            <input
+              id="canvas-text-input"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              aria-label="Edit text on canvas"
+            />
           </div>
-          <input
-            id="canvas-text-input"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
-            aria-label="Edit text on canvas"
-          />
+          <p class="canvas-tip">Double click to type a new word, click on word to edit</p>
         </div>
       </main>
 
