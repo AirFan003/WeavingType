@@ -22,6 +22,8 @@ let lastEmptyClickX = 0;
 let lastEmptyClickY = 0;
 let pendingEmptyClick = null;
 let canvasMode = 'edit';
+let renderModality = 'weave';
+let calligraphyPresetBackup = null;
 
 const DOUBLE_CLICK_MS = 400;
 const DRAG_THRESHOLD = 4;
@@ -88,17 +90,55 @@ const THREAD_PHYSICS = {
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
 const FONT_ENGLISH =
   'https://cdn.jsdelivr.net/gh/adobe-fonts/source-serif@release/VAR/SourceSerif4Variable-Roman.ttf';
-const FONT_CHINESE =
-  'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff';
-const FONT_CHINESE_FULL =
-  'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf';
+const CHINESE_FONT_STYLES = {
+  sans: {
+    label: 'Noto Sans · Modern',
+    cssFamily: 'Noto Sans SC',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf',
+  },
+  kai: {
+    label: '马善政 · Regular script',
+    cssFamily: 'Ma Shan Zheng',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/ma-shan-zheng@5.2.5/chinese-simplified-400-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/mashanzheng/MaShanZheng-Regular.ttf',
+  },
+  xing: {
+    label: '芝麻行 · Running script',
+    cssFamily: 'Zhi Mang Xing',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/zhi-mang-xing@5.2.5/chinese-simplified-400-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/zhimangxing/ZhiMangXing-Regular.ttf',
+  },
+  cao: {
+    label: '刘健毛草 · Cursive',
+    cssFamily: 'Liu Jian Mao Cao',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/liu-jian-mao-cao@5.2.5/chinese-simplified-400-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/liujianmaocao/LiuJianMaoCao-Regular.ttf',
+  },
+  cang: {
+    label: '龙藏 · Calligraphic',
+    cssFamily: 'Long Cang',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/long-cang@5.2.5/chinese-simplified-400-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/longcang/LongCang-Regular.ttf',
+  },
+};
+
+let chineseFontStyle = 'sans';
+let chineseFontCache = {};
+let chineseFontLoadToken = 0;
+
 const A4_RATIO = 297 / 210;
 const ARCHIVE_STORAGE_KEY = 'weavingTypePosterArchive';
 const MAX_ARCHIVE_ITEMS = 30;
 
 function preload() {
   fontEnglish = loadFont(FONT_ENGLISH);
-  fontChinese = loadFont(FONT_CHINESE);
+  fontChinese = loadFont(CHINESE_FONT_STYLES.sans.subset);
 }
 
 function fontsReady() {
@@ -111,6 +151,136 @@ function isCjkChar(char) {
 
 function fontForChar(char) {
   return isCjkChar(char) ? fontChinese : fontEnglish;
+}
+
+function getChineseFontStyleConfig(styleId) {
+  return CHINESE_FONT_STYLES[styleId] || CHINESE_FONT_STYLES.sans;
+}
+
+function syncChineseUiFont() {
+  let config = getChineseFontStyleConfig(chineseFontStyle);
+  document.documentElement.style.setProperty('--chinese-ui-font', `'${config.cssFamily}'`);
+}
+
+function rebuildChineseTextChunks() {
+  for (let chunk of textChunks) {
+    chunk.rebuildLine();
+  }
+}
+
+function applyLoadedChineseFont(styleId, loadedFont, markFull) {
+  let cacheKey = markFull ? `${styleId}:full` : `${styleId}:subset`;
+  chineseFontCache[cacheKey] = loadedFont;
+
+  if (styleId !== chineseFontStyle) {
+    return;
+  }
+
+  fontChinese = loadedFont;
+  rebuildChineseTextChunks();
+}
+
+function loadFullChineseFont(styleId = chineseFontStyle) {
+  let config = getChineseFontStyleConfig(styleId);
+  let fullKey = `${styleId}:full`;
+
+  if (chineseFontCache[fullKey]) {
+    if (styleId === chineseFontStyle) {
+      fontChinese = chineseFontCache[fullKey];
+      rebuildChineseTextChunks();
+    }
+    return;
+  }
+
+  loadFont(
+    config.full,
+    (loadedFont) => {
+      applyLoadedChineseFont(styleId, loadedFont, true);
+    },
+    (error) => {
+      console.warn(`Extended Chinese font unavailable for ${styleId}, using subset font.`, error);
+    }
+  );
+}
+
+function setChineseFontStyle(styleId, options = {}) {
+  let config = getChineseFontStyleConfig(styleId);
+  let nextStyle = CHINESE_FONT_STYLES[styleId] ? styleId : 'sans';
+  let forceReload = options.forceReload === true;
+  let styleSelect = select('#chinese-font-style');
+
+  if (!forceReload && nextStyle === chineseFontStyle && fontChinese) {
+    if (styleSelect) {
+      styleSelect.value(nextStyle);
+    }
+    syncChineseUiFont();
+    return;
+  }
+
+  chineseFontStyle = nextStyle;
+  syncChineseUiFont();
+
+  if (styleSelect) {
+    styleSelect.value(nextStyle);
+  }
+
+  let fullKey = `${nextStyle}:full`;
+  let subsetKey = `${nextStyle}:subset`;
+
+  if (chineseFontCache[fullKey]) {
+    fontChinese = chineseFontCache[fullKey];
+    rebuildChineseTextChunks();
+    return;
+  }
+
+  if (chineseFontCache[subsetKey]) {
+    fontChinese = chineseFontCache[subsetKey];
+    rebuildChineseTextChunks();
+    loadFullChineseFont(nextStyle);
+    return;
+  }
+
+  let loadToken = ++chineseFontLoadToken;
+  if (styleSelect) {
+    styleSelect.attribute('disabled', '');
+  }
+
+  loadFont(
+    config.subset,
+    (loadedFont) => {
+      chineseFontCache[subsetKey] = loadedFont;
+
+      if (loadToken !== chineseFontLoadToken || nextStyle !== chineseFontStyle) {
+        return;
+      }
+
+      fontChinese = loadedFont;
+      rebuildChineseTextChunks();
+      if (styleSelect) {
+        styleSelect.removeAttribute('disabled');
+      }
+      loadFullChineseFont(nextStyle);
+    },
+    (error) => {
+      console.warn(`Failed to load Chinese font style ${nextStyle}`, error);
+      if (styleSelect && loadToken === chineseFontLoadToken) {
+        styleSelect.removeAttribute('disabled');
+      }
+    }
+  );
+}
+
+function bindChineseFontControls() {
+  let styleSelect = select('#chinese-font-style');
+  if (!styleSelect) {
+    return;
+  }
+
+  styleSelect.changed(() => {
+    setChineseFontStyle(styleSelect.value());
+  });
+  styleSelect.value(chineseFontStyle);
+  syncChineseUiFont();
 }
 
 function charAdvanceForSize(char, addTrackingAfter, textSize) {
@@ -136,6 +306,7 @@ function setup() {
   initDefaultBlocks();
   loadArchiveFromStorage();
   renderArchivePanel();
+  chineseFontCache['sans:subset'] = fontChinese;
   loadFullChineseFont();
 }
 
@@ -178,21 +349,6 @@ function resizeArtboard() {
   }
 }
 
-function loadFullChineseFont() {
-  loadFont(
-    FONT_CHINESE_FULL,
-    (loadedFont) => {
-      fontChinese = loadedFont;
-      for (let chunk of textChunks) {
-        chunk.rebuildLine();
-      }
-    },
-    (error) => {
-      console.warn('Extended Chinese font unavailable, using subset font.', error);
-    }
-  );
-}
-
 function bindControls() {
   canvasTextInput = select('#canvas-text-input');
 
@@ -219,6 +375,7 @@ function bindControls() {
   });
 
   enhanceThickSliders();
+  bindChineseFontControls();
 
   bindSlider('density-slider', 'density-value', (v) => {
     sampleDensity = v;
@@ -284,6 +441,7 @@ function bindControls() {
   bindColorControls();
   bindBackgroundImageControls();
   bindCanvasModeControls();
+  bindRenderModalityControls();
   select('#save-canvas').mousePressed(saveCanvasToArchive);
   select('#download-svg').mousePressed(downloadSvg);
   select('#download-png').mousePressed(downloadPng);
@@ -337,6 +495,146 @@ function updateModeUI() {
     editBtn.removeClass('is-active');
     perfBtn.addClass('is-active');
   }
+}
+
+function isCalligraphyModality() {
+  return renderModality === 'calligraphy';
+}
+
+function bindRenderModalityControls() {
+  select('#modality-weave').mousePressed(() => setRenderModality('weave'));
+  select('#modality-calligraphy').mousePressed(() => setRenderModality('calligraphy'));
+  updateRenderModalityUI();
+}
+
+function updateRenderModalityUI() {
+  let weaveBtn = select('#modality-weave');
+  let calligBtn = select('#modality-calligraphy');
+
+  if (isCalligraphyModality()) {
+    weaveBtn.removeClass('is-active');
+    calligBtn.addClass('is-active');
+  } else {
+    weaveBtn.addClass('is-active');
+    calligBtn.removeClass('is-active');
+  }
+}
+
+function captureLiveControlSnapshot() {
+  return {
+    letterSizeScale,
+    letterSpacing,
+    sampleDensity,
+    withinThreadDensity,
+    gapsThreadDensity,
+    lineLayers,
+    lineSpacing,
+    layerStep,
+    strokeW,
+    edgeJitter,
+    withinThreadSag,
+    gapsThreadSag,
+    colorMode,
+    chineseFontStyle,
+    backgroundColor,
+    paletteColors: [...paletteColors],
+  };
+}
+
+function applyLiveControlSnapshot(settings, options = {}) {
+  letterSizeScale = settings.letterSizeScale;
+  letterSpacing = settings.letterSpacing;
+  sampleDensity = settings.sampleDensity;
+  withinThreadDensity = settings.withinThreadDensity;
+  gapsThreadDensity = settings.gapsThreadDensity;
+  lineLayers = settings.lineLayers;
+  lineSpacing = settings.lineSpacing;
+  layerStep = settings.layerStep;
+  strokeW = settings.strokeW;
+  edgeJitter = settings.edgeJitter;
+  withinThreadSag = settings.withinThreadSag;
+  gapsThreadSag = settings.gapsThreadSag;
+  colorMode = settings.colorMode;
+  backgroundColor = settings.backgroundColor;
+  paletteColors = [...settings.paletteColors];
+
+  setSliderControl('letter-size-slider', 'letter-size-value', letterSizeScale, letterSizeScale.toFixed(2));
+  setSliderControl('letter-spacing-slider', 'letter-spacing-value', letterSpacing, letterSpacing.toFixed(3));
+  setSliderControl('density-slider', 'density-value', sampleDensity, sampleDensity.toFixed(2));
+  setSliderControl('within-density-slider', 'within-density-value', withinThreadDensity, withinThreadDensity.toFixed(2));
+  setSliderControl('gaps-density-slider', 'gaps-density-value', gapsThreadDensity, gapsThreadDensity.toFixed(2));
+  setSliderControl('layers-slider', 'layers-value', lineLayers, String(lineLayers));
+  setSliderControl('spacing-slider', 'spacing-value', lineSpacing, lineSpacing.toFixed(2));
+  setSliderControl('step-slider', 'step-value', layerStep, layerStep.toFixed(3));
+  setSliderControl('stroke-slider', 'stroke-value', strokeW, strokeW.toFixed(2));
+  setSliderControl('jitter-slider', 'jitter-value', edgeJitter, edgeJitter.toFixed(2));
+  setSliderControl('within-sag-slider', 'within-sag-value', withinThreadSag, withinThreadSag.toFixed(2));
+  setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
+
+  select('#color-mode').value(colorMode);
+  select('#bg-color').value(backgroundColor);
+  select('#color-1').value(paletteColors[0]);
+  select('#color-2').value(paletteColors[1]);
+  select('#color-3').value(paletteColors[2]);
+  updateColorControlVisibility();
+
+  if (options.syncFont !== false) {
+    setChineseFontStyle(settings.chineseFontStyle || 'sans');
+  }
+
+  syncCanvasMetrics();
+  syncAllRangeSliderFills();
+  invalidateWeaveCaches();
+  stitchPairCache.clear();
+  invalidateThreadGeometryCache();
+}
+
+function getCalligraphyPreset() {
+  return {
+    letterSizeScale,
+    letterSpacing,
+    sampleDensity: 0.17,
+    withinThreadDensity: 1,
+    gapsThreadDensity: 0.92,
+    lineLayers: 16,
+    lineSpacing: 0.036,
+    layerStep: 0.006,
+    strokeW: 0.42,
+    edgeJitter: 0.95,
+    withinThreadSag: 0.28,
+    gapsThreadSag: 0.4,
+    colorMode: 'monotone',
+    chineseFontStyle: chineseFontStyle === 'sans' ? 'cang' : chineseFontStyle,
+    backgroundColor: '#f4efe6',
+    paletteColors: ['#0d0b09', paletteColors[1] || '#c45c3e', paletteColors[2] || '#6b8f71'],
+  };
+}
+
+function setRenderModality(mode) {
+  if (mode !== 'weave' && mode !== 'calligraphy') {
+    return;
+  }
+
+  if (mode === renderModality) {
+    updateRenderModalityUI();
+    return;
+  }
+
+  if (mode === 'calligraphy') {
+    calligraphyPresetBackup = captureLiveControlSnapshot();
+    renderModality = 'calligraphy';
+    applyLiveControlSnapshot(getCalligraphyPreset());
+  } else {
+    renderModality = 'weave';
+    if (calligraphyPresetBackup) {
+      applyLiveControlSnapshot(calligraphyPresetBackup);
+      calligraphyPresetBackup = null;
+    } else {
+      invalidateWeaveCaches();
+    }
+  }
+
+  updateRenderModalityUI();
 }
 
 function createThreadState() {
@@ -964,6 +1262,11 @@ function draw() {
   prevMouseY = mouseY;
   mouseNearThreads = false;
 
+  if (isCalligraphyModality()) {
+    drawCalligraphyUnderlay();
+    drawCalligraphyMesh();
+  }
+
   let mouseInfluence =
     !dragState &&
     !editingChunkId &&
@@ -1045,9 +1348,97 @@ function drawEditingPlaceholder() {
 
   let textSize = chunk.textSize();
   noFill();
-  stroke(232, 220, 200, 120);
+  if (isCalligraphyModality()) {
+    stroke(20, 16, 12, 140);
+  } else {
+    stroke(232, 220, 200, 120);
+  }
   strokeWeight(1);
   line(chunk.x, chunk.y - textSize * 0.05, chunk.x + textSize * 0.45, chunk.y - textSize * 0.05);
+}
+
+function drawCalligraphyUnderlay() {
+  textAlign(LEFT, BASELINE);
+  noStroke();
+
+  for (let chunk of textChunks) {
+    if (!chunk.text || !chunk.line) {
+      continue;
+    }
+
+    let size = chunk.textSize();
+
+    for (let char of chunk.line.chars) {
+      if (!char.c || char.c === ' ') {
+        continue;
+      }
+
+      textFont(char.font);
+      textSize(size);
+      fill(10, 8, 6, isCjkChar(char.c) ? 252 : 220);
+      text(char.c, char.xp, char.yp);
+    }
+  }
+}
+
+function drawCalligraphyMesh() {
+  let strokeRgb = getPaletteRgb(paletteColors[0] || '#0d0b09');
+
+  for (let chunk of textChunks) {
+    if (!chunk.text || !chunk.line) {
+      continue;
+    }
+
+    let textSize = chunk.textSize();
+    chunk.line.ensureRawPoints(sampleDensity);
+    let points = chunk.line.rawPoints;
+    if (!points || points.length < 12) {
+      continue;
+    }
+
+    let targetCount = constrain(floor(points.length * 0.22), 48, 220);
+    let step = max(1, floor(points.length / targetCount));
+    let sampled = [];
+
+    for (let i = 0; i < points.length; i += step) {
+      sampled.push(points[i]);
+    }
+
+    let minDist = textSize * 0.1;
+    let maxDist = textSize * 1.45;
+    let minDistSq = minDist * minDist;
+    let maxDistSq = maxDist * maxDist;
+
+    for (let i = 0; i < sampled.length; i++) {
+      let a = sampled[i];
+      let linkCount = 2 + floor(threadRandom(a.x, a.y, 41.2) * 4);
+
+      for (let n = 0; n < linkCount; n++) {
+        let j = floor(threadRandom(a.x, a.y, 52.7 + n * 3.1) * sampled.length);
+        if (j === i) {
+          continue;
+        }
+
+        let b = sampled[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let distSq = dx * dx + dy * dy;
+
+        if (distSq < minDistSq || distSq > maxDistSq) {
+          continue;
+        }
+
+        if (threadRandom(a.x, b.y, 63.4 + n) < 0.28) {
+          continue;
+        }
+
+        let alpha = 22 + floor(threadRandom(b.x, a.y, 74.8 + n) * 48);
+        stroke(strokeRgb.r, strokeRgb.g, strokeRgb.b, alpha);
+        strokeWeight(strokeW * (0.28 + threadRandom(a.x, b.x, 88.1 + n) * 0.35));
+        line(a.x, a.y, b.x, b.y);
+      }
+    }
+  }
 }
 
 function drawSelectionUI() {
@@ -1061,12 +1452,16 @@ function drawSelectionUI() {
   }
 
   let b = chunk.getBounds();
+  let accent = isCalligraphyModality()
+    ? { r: 28, g: 22, b: 16, a: 210 }
+    : { r: 232, g: 220, b: 200, a: 200 };
+
   noFill();
-  stroke(232, 220, 200, 200);
+  stroke(accent.r, accent.g, accent.b, accent.a);
   strokeWeight(1.5);
   rect(b.x, b.y, b.w, b.h, 2);
 
-  fill(232, 220, 200);
+  fill(accent.r, accent.g, accent.b);
   noStroke();
   circle(b.x + b.w, b.y + b.h, 10);
 }
@@ -1512,9 +1907,14 @@ function skipChanceForDensity(density) {
 function buildStitchPairs(segment, layerSalt, withinDensity, gapsDensity) {
   let pairs = [];
   let i = 0;
+  let longSpanChance = isCalligraphyModality() ? 0.38 : 0.62;
+  let stepChance = isCalligraphyModality() ? 0.55 : 0.7;
 
   while (i < segment.length) {
-    let span = threadRandom(segment[i].x, segment[i].y, layerSalt + 2) > 0.62 ? 2 : 1;
+    let span = threadRandom(segment[i].x, segment[i].y, layerSalt + 2) > longSpanChance ? 2 : 1;
+    if (isCalligraphyModality() && threadRandom(segment[i].x, segment[i].y, layerSalt + 2.6) > 0.82) {
+      span = min(3, segment.length - 1 - i);
+    }
     let j = min(i + span, segment.length - 1);
 
     if (j > i) {
@@ -1527,7 +1927,7 @@ function buildStitchPairs(segment, layerSalt, withinDensity, gapsDensity) {
       }
     }
 
-    let step = threadRandom(segment[j].x, segment[j].y, layerSalt + 4) > 0.7 ? 2 : 1;
+    let step = threadRandom(segment[j].x, segment[j].y, layerSalt + 4) > stepChance ? 2 : 1;
     i += step;
   }
 
@@ -1693,8 +2093,12 @@ function applyThreadPhysicsToGeometry(thread, state) {
 }
 
 function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
-  let jitterAmt = edgeJitter * textSize * 0.018;
+  let jitterScale = isCalligraphyModality() ? 0.028 : 0.018;
+  let jitterAmt = edgeJitter * textSize * jitterScale;
   let sagAmt = sagAmountForThread(inside, textSize);
+  if (isCalligraphyModality()) {
+    sagAmt *= 0.55;
+  }
 
   let start = jitterPoint(a.x, a.y, jitterAmt, layerSalt);
   let end = jitterPoint(b.x, b.y, jitterAmt, layerSalt + 5.2);
@@ -1715,18 +2119,20 @@ function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
   let midY = (start.y + end.y) / 2;
   let perpX = -ny;
   let perpY = nx;
-  let sway = (threadRandom(midX, midY, layerSalt + 7.4) - 0.5) * jitterAmt * 0.8;
+  let sway = (threadRandom(midX, midY, layerSalt + 7.4) - 0.5) * jitterAmt * (isCalligraphyModality() ? 1.25 : 0.8);
   let droop = sagAmt * (0.35 + threadRandom(midX, midY, layerSalt + 8.2) * 0.65);
 
   return {
     start,
     ctrl: {
       x: midX + perpX * sway,
-      y: midY + droop + abs(dx) * 0.03,
+      y: midY + droop + abs(dx) * (isCalligraphyModality() ? 0.012 : 0.03),
     },
     end,
     weight: strokeW * (0.55 + threadRandom(a.x, a.y, layerSalt + 9.3) * 0.9),
-    alpha: 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160),
+    alpha: isCalligraphyModality()
+      ? 70 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 130)
+      : 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160),
   };
 }
 
@@ -1762,6 +2168,42 @@ function threadToSvgPath(thread, strokeHex) {
   );
 }
 
+function collectSvgCalligraphyUnderlay() {
+  if (!isCalligraphyModality()) {
+    return [];
+  }
+
+  let nodes = [];
+
+  for (let chunk of textChunks) {
+    if (!chunk.text || !chunk.line) {
+      continue;
+    }
+
+    let size = chunk.textSize();
+
+    for (let char of chunk.line.chars) {
+      if (!char.c || char.c === ' ') {
+        continue;
+      }
+
+      let opacity = isCjkChar(char.c) ? '0.99' : '0.86';
+      let escaped = char.c
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      nodes.push(
+        `<text x="${svgNumber(char.xp)}" y="${svgNumber(char.yp)}" ` +
+          `fill="#0a0806" fill-opacity="${opacity}" font-size="${svgNumber(size)}" ` +
+          `font-family="${getChineseFontStyleConfig(chineseFontStyle).cssFamily}, 'Source Serif 4', serif">` +
+          `${escaped}</text>`
+      );
+    }
+  }
+
+  return nodes;
+}
+
 function collectSvgPaths() {
   let paths = [];
 
@@ -1771,6 +2213,20 @@ function collectSvgPaths() {
   });
 
   return paths;
+}
+
+function buildSvgDocument() {
+  let underlay = collectSvgCalligraphyUnderlay();
+  let paths = collectSvgPaths();
+  let body = [...underlay, ...paths].join('\n  ');
+
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
+    `${buildSvgBackgroundMarkup()}\n` +
+    `  ${body}\n` +
+    '</svg>'
+  );
 }
 
 function makeExportBasename() {
@@ -1815,6 +2271,8 @@ function captureCurrentSettings() {
     withinThreadSag,
     gapsThreadSag,
     colorMode,
+    chineseFontStyle,
+    renderModality,
     backgroundColor,
     backgroundImageDataUrl,
     paletteColors: [...paletteColors],
@@ -1852,11 +2310,15 @@ function applySettingsFromSnapshot(settings) {
   setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
 
   select('#color-mode').value(colorMode);
+  setChineseFontStyle(settings.chineseFontStyle || 'sans');
   select('#bg-color').value(backgroundColor);
   select('#color-1').value(paletteColors[0]);
   select('#color-2').value(paletteColors[1]);
   select('#color-3').value(paletteColors[2]);
   updateColorControlVisibility();
+  renderModality = settings.renderModality === 'calligraphy' ? 'calligraphy' : 'weave';
+  calligraphyPresetBackup = null;
+  updateRenderModalityUI();
   loadBackgroundImageFromDataUrl(settings.backgroundImageDataUrl || null);
   syncCanvasMetrics();
   syncAllRangeSliderFills();
@@ -2078,18 +2540,6 @@ function buildSvgBackgroundMarkup() {
   }
 
   return markup;
-}
-
-function buildSvgDocument() {
-  let paths = collectSvgPaths();
-
-  return (
-    '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    `${buildSvgBackgroundMarkup()}\n` +
-    `  ${paths.join('\n  ')}\n` +
-    '</svg>'
-  );
 }
 
 function downloadSvg() {

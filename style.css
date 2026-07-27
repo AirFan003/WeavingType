@@ -113,7 +113,7 @@ body {
   color: transparent;
   caret-color: #e8dcc8;
   outline: none;
-  font-family: 'Source Serif 4', 'Noto Sans SC', serif;
+  font-family: 'Source Serif 4', var(--chinese-ui-font, 'Noto Sans SC'), serif;
   line-height: 1;
   min-width: 24px;
   z-index: 2;
@@ -283,7 +283,7 @@ body {
   opacity: 0.82;
 }
 
-#color-mode {
+.control-select {
   width: 100%;
   padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -295,14 +295,24 @@ body {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-#color-mode:hover {
+.control-select:hover {
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.06);
 }
 
-#color-mode:focus {
+.control-select:focus {
   outline: none;
   border-color: rgba(232, 220, 200, 0.35);
+}
+
+.control-select:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.control-select option {
+  background: #1a1816;
+  color: #f0ece4;
 }
 
 .color-label.is-hidden {
