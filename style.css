@@ -319,6 +319,16 @@ body {
   display: none;
 }
 
+.connect-controls {
+  margin-top: 12px;
+  transition: opacity 0.18s ease;
+}
+
+.connect-controls.is-disabled {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
 input[type='color'] {
   width: 48px;
   height: 36px;

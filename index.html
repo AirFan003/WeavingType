@@ -164,6 +164,52 @@
         </section>
 
         <section class="control-section">
+          <h2>Connect</h2>
+          <div class="mode-toggle">
+            <button type="button" id="connect-off" class="mode-btn is-active">Off</button>
+            <button type="button" id="connect-on" class="mode-btn">On</button>
+          </div>
+          <p class="hint">Bridge threads between separate words so they latch and interweave, even across different text brackets.</p>
+          <div id="connect-controls" class="connect-controls is-disabled">
+            <div class="control-row">
+              <label for="connect-density-slider">Connect density</label>
+              <div class="control-input">
+                <input id="connect-density-slider" type="range" min="0" max="1" step="0.05" value="0.45" />
+                <span id="connect-density-value" class="control-value">0.45</span>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="connect-count-slider">Links per pair</label>
+              <div class="control-input">
+                <input id="connect-count-slider" type="range" min="1" max="60" step="1" value="14" />
+                <span id="connect-count-value" class="control-value">14</span>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="connect-max-dist-slider">Max reach</label>
+              <div class="control-input">
+                <input id="connect-max-dist-slider" type="range" min="0.3" max="3" step="0.05" value="1.35" />
+                <span id="connect-max-dist-value" class="control-value">1.35</span>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="connect-min-dist-slider">Min reach</label>
+              <div class="control-input">
+                <input id="connect-min-dist-slider" type="range" min="0" max="1" step="0.05" value="0.18" />
+                <span id="connect-min-dist-value" class="control-value">0.18</span>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="connect-sag-slider">Connect sag</label>
+              <div class="control-input">
+                <input id="connect-sag-slider" type="range" min="0" max="2.5" step="0.05" value="1.1" />
+                <span id="connect-sag-value" class="control-value">1.10</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section">
           <h2>Color</h2>
           <div class="control-row">
             <label for="color-mode">Color mode</label>

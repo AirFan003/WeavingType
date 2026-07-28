@@ -42,6 +42,14 @@ let edgeJitter = 0.45;
 let withinThreadSag = 0.5;
 let gapsThreadSag = 0.5;
 
+let connectEnabled = false;
+let connectDensity = 0.45;
+let connectCount = 14;
+let connectMaxDist = 1.35;
+let connectMinDist = 0.18;
+let connectSag = 1.1;
+let connectPairCache = new Map();
+
 const SAG_AMOUNT_SCALE = 0.06;
 let letterSpacing = 0.065;
 let colorMode = 'monotone';
@@ -430,6 +438,26 @@ function bindControls() {
     gapsThreadSag = v;
     invalidateThreadGeometryCache();
   });
+  bindSlider('connect-density-slider', 'connect-density-value', (v) => {
+    connectDensity = v;
+    connectPairCache.clear();
+  });
+  bindSlider('connect-count-slider', 'connect-count-value', (v) => {
+    connectCount = Math.round(v);
+    connectPairCache.clear();
+  });
+  bindSlider('connect-max-dist-slider', 'connect-max-dist-value', (v) => {
+    connectMaxDist = v;
+    connectPairCache.clear();
+  });
+  bindSlider('connect-min-dist-slider', 'connect-min-dist-value', (v) => {
+    connectMinDist = v;
+    connectPairCache.clear();
+  });
+  bindSlider('connect-sag-slider', 'connect-sag-value', (v) => {
+    connectSag = v;
+    invalidateThreadGeometryCache();
+  });
   bindSlider('chunk-scale-slider', 'chunk-scale-value', (v) => {
     let chunk = getSelectedChunk();
     if (chunk) {
@@ -442,6 +470,7 @@ function bindControls() {
   bindBackgroundImageControls();
   bindCanvasModeControls();
   bindRenderModalityControls();
+  bindConnectControls();
   select('#save-canvas').mousePressed(saveCanvasToArchive);
   select('#download-svg').mousePressed(downloadSvg);
   select('#download-png').mousePressed(downloadPng);
@@ -534,6 +563,12 @@ function captureLiveControlSnapshot() {
     edgeJitter,
     withinThreadSag,
     gapsThreadSag,
+    connectEnabled,
+    connectDensity,
+    connectCount,
+    connectMaxDist,
+    connectMinDist,
+    connectSag,
     colorMode,
     chineseFontStyle,
     backgroundColor,
@@ -554,6 +589,12 @@ function applyLiveControlSnapshot(settings, options = {}) {
   edgeJitter = settings.edgeJitter;
   withinThreadSag = settings.withinThreadSag;
   gapsThreadSag = settings.gapsThreadSag;
+  connectEnabled = settings.connectEnabled === true;
+  connectDensity = settings.connectDensity ?? connectDensity;
+  connectCount = settings.connectCount ?? connectCount;
+  connectMaxDist = settings.connectMaxDist ?? connectMaxDist;
+  connectMinDist = settings.connectMinDist ?? connectMinDist;
+  connectSag = settings.connectSag ?? connectSag;
   colorMode = settings.colorMode;
   backgroundColor = settings.backgroundColor;
   paletteColors = [...settings.paletteColors];
@@ -570,6 +611,12 @@ function applyLiveControlSnapshot(settings, options = {}) {
   setSliderControl('jitter-slider', 'jitter-value', edgeJitter, edgeJitter.toFixed(2));
   setSliderControl('within-sag-slider', 'within-sag-value', withinThreadSag, withinThreadSag.toFixed(2));
   setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
+  setSliderControl('connect-density-slider', 'connect-density-value', connectDensity, connectDensity.toFixed(2));
+  setSliderControl('connect-count-slider', 'connect-count-value', connectCount, String(connectCount));
+  setSliderControl('connect-max-dist-slider', 'connect-max-dist-value', connectMaxDist, connectMaxDist.toFixed(2));
+  setSliderControl('connect-min-dist-slider', 'connect-min-dist-value', connectMinDist, connectMinDist.toFixed(2));
+  setSliderControl('connect-sag-slider', 'connect-sag-value', connectSag, connectSag.toFixed(2));
+  updateConnectUI();
 
   select('#color-mode').value(colorMode);
   select('#bg-color').value(backgroundColor);
@@ -637,6 +684,42 @@ function setRenderModality(mode) {
   updateRenderModalityUI();
 }
 
+function isConnectEnabled() {
+  return connectEnabled;
+}
+
+function bindConnectControls() {
+  select('#connect-off').mousePressed(() => setConnectEnabled(false));
+  select('#connect-on').mousePressed(() => setConnectEnabled(true));
+  updateConnectUI();
+}
+
+function setConnectEnabled(enabled) {
+  connectEnabled = Boolean(enabled);
+  connectPairCache.clear();
+  updateConnectUI();
+}
+
+function updateConnectUI() {
+  let offBtn = select('#connect-off');
+  let onBtn = select('#connect-on');
+  let controls = select('#connect-controls');
+
+  if (connectEnabled) {
+    offBtn.removeClass('is-active');
+    onBtn.addClass('is-active');
+    if (controls) {
+      controls.removeClass('is-disabled');
+    }
+  } else {
+    onBtn.removeClass('is-active');
+    offBtn.addClass('is-active');
+    if (controls) {
+      controls.addClass('is-disabled');
+    }
+  }
+}
+
 function createThreadState() {
   return { sag: 0, velSag: 0, broken: false, breakDrop: 0 };
 }
@@ -656,7 +739,7 @@ function threadBreakRadius(textSize) {
 function findNearestThreadHit(mx, my) {
   let best = null;
 
-  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
+  let consider = (pair, layerSalt, inside, textSize) => {
     let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
     let radius = threadBreakRadius(textSize);
     let threadDist = fastDistanceToThread(mx, my, thread, radius);
@@ -668,6 +751,14 @@ function findNearestThreadHit(mx, my) {
         textSize,
       };
     }
+  };
+
+  forEachWeaveThread((pair, layerSalt, inside, textSize) => {
+    consider(pair, layerSalt, inside, textSize);
+  });
+
+  forEachConnectThread((pair, layerSalt, inside, textSize) => {
+    consider(pair, layerSalt, inside, textSize);
   });
 
   return best;
@@ -1003,7 +1094,7 @@ function bindSlider(sliderId, labelId, onChange) {
   let update = () => {
     let value = parseFloat(slider.value());
     label.html(
-      sliderId === 'layers-slider'
+      sliderId === 'layers-slider' || sliderId === 'connect-count-slider'
         ? String(Math.round(value))
         : value.toFixed(
             sliderId === 'step-slider' || sliderId === 'letter-spacing-slider' ? 3 : 2
@@ -1174,7 +1265,7 @@ function hitTestChunk(mx, my) {
 }
 
 function geometryRenderSalt() {
-  return `${withinThreadSag.toFixed(3)}|${gapsThreadSag.toFixed(3)}|${edgeJitter.toFixed(3)}|${strokeW.toFixed(3)}`;
+  return `${withinThreadSag.toFixed(3)}|${gapsThreadSag.toFixed(3)}|${connectSag.toFixed(3)}|${edgeJitter.toFixed(3)}|${strokeW.toFixed(3)}`;
 }
 
 function invalidateThreadGeometryCache() {
@@ -1183,6 +1274,7 @@ function invalidateThreadGeometryCache() {
 
 function invalidateWeaveCaches() {
   stitchPairCache.clear();
+  connectPairCache.clear();
   invalidateThreadGeometryCache();
 
   for (let chunk of textChunks) {
@@ -1222,6 +1314,223 @@ function forEachWeaveThread(onThread) {
       }
     }
   }
+}
+
+function boundsGapDistance(a, b) {
+  let dx = 0;
+  let dy = 0;
+
+  if (a.x + a.w < b.x) {
+    dx = b.x - (a.x + a.w);
+  } else if (b.x + b.w < a.x) {
+    dx = a.x - (b.x + b.w);
+  }
+
+  if (a.y + a.h < b.y) {
+    dy = b.y - (a.y + a.h);
+  } else if (b.y + b.h < a.y) {
+    dy = a.y - (b.y + b.h);
+  }
+
+  return sqrt(dx * dx + dy * dy);
+}
+
+function subsampleConnectPoints(points, textSize) {
+  if (!points || points.length === 0) {
+    return [];
+  }
+
+  let target = constrain(floor(28 + connectDensity * 90), 24, 140);
+  let step = max(1, floor(points.length / target));
+  let sampled = [];
+
+  for (let i = 0; i < points.length; i += step) {
+    sampled.push(points[i]);
+  }
+
+  return sampled;
+}
+
+function connectPairCacheKey(chunkA, chunkB) {
+  let a = chunkA.getBounds();
+  let b = chunkB.getBounds();
+  return (
+    `${chunkA.id}|${chunkB.id}|${sampleDensity.toFixed(3)}|${connectDensity.toFixed(3)}|` +
+    `${connectCount}|${connectMaxDist.toFixed(3)}|${connectMinDist.toFixed(3)}|` +
+    `${a.x.toFixed(1)}|${a.y.toFixed(1)}|${a.w.toFixed(1)}|${a.h.toFixed(1)}|` +
+    `${b.x.toFixed(1)}|${b.y.toFixed(1)}|${b.w.toFixed(1)}|${b.h.toFixed(1)}|` +
+    `${chunkA.scale.toFixed(3)}|${chunkB.scale.toFixed(3)}`
+  );
+}
+
+function buildConnectPairs(chunkA, chunkB) {
+  let key = connectPairCacheKey(chunkA, chunkB);
+  if (connectPairCache.has(key)) {
+    return connectPairCache.get(key);
+  }
+
+  chunkA.line.ensureRawPoints(sampleDensity);
+  chunkB.line.ensureRawPoints(sampleDensity);
+
+  let textSize = max(chunkA.textSize(), chunkB.textSize());
+  let minDist = textSize * connectMinDist;
+  let maxDist = textSize * connectMaxDist;
+  let minDistSq = minDist * minDist;
+  let maxDistSq = maxDist * maxDist;
+  let pointsA = subsampleConnectPoints(chunkA.line.rawPoints, textSize);
+  let pointsB = subsampleConnectPoints(chunkB.line.rawPoints, textSize);
+  let candidates = [];
+
+  for (let i = 0; i < pointsA.length; i++) {
+    let a = pointsA[i];
+    for (let j = 0; j < pointsB.length; j++) {
+      let b = pointsB[j];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let distSq = dx * dx + dy * dy;
+
+      if (distSq < minDistSq || distSq > maxDistSq) {
+        continue;
+      }
+
+      let score =
+        distSq * (0.65 + threadRandom(a.x, a.y, 210.4 + j) * 0.7) +
+        threadRandom(b.x, b.y, 311.7 + i) * textSize * textSize * 0.08;
+
+      if (threadRandom(a.x, b.y, 412.2 + i + j) < skipChanceForDensity(connectDensity)) {
+        continue;
+      }
+
+      candidates.push({ a, b, score });
+    }
+  }
+
+  candidates.sort((left, right) => left.score - right.score);
+
+  let pairs = [];
+  let usedA = new Set();
+  let usedB = new Set();
+  let limit = max(1, connectCount);
+
+  for (let candidate of candidates) {
+    if (pairs.length >= limit) {
+      break;
+    }
+
+    let aKey = `${candidate.a.x.toFixed(1)}|${candidate.a.y.toFixed(1)}`;
+    let bKey = `${candidate.b.x.toFixed(1)}|${candidate.b.y.toFixed(1)}`;
+    if (usedA.has(aKey) || usedB.has(bKey)) {
+      continue;
+    }
+
+    usedA.add(aKey);
+    usedB.add(bKey);
+    pairs.push([candidate.a, candidate.b]);
+  }
+
+  if (connectPairCache.size > 400) {
+    connectPairCache.clear();
+  }
+
+  connectPairCache.set(key, pairs);
+  return pairs;
+}
+
+function forEachConnectThread(onThread) {
+  if (!connectEnabled || textChunks.length < 2) {
+    return;
+  }
+
+  for (let i = 0; i < textChunks.length; i++) {
+    let chunkA = textChunks[i];
+    if (!chunkA.text || !chunkA.line) {
+      continue;
+    }
+
+    let boundsA = chunkA.getBounds();
+    let sizeA = chunkA.textSize();
+
+    for (let j = i + 1; j < textChunks.length; j++) {
+      let chunkB = textChunks[j];
+      if (!chunkB.text || !chunkB.line) {
+        continue;
+      }
+
+      let sizeB = chunkB.textSize();
+      let textSize = max(sizeA, sizeB);
+      let maxReach = textSize * connectMaxDist;
+      let gap = boundsGapDistance(boundsA, chunkB.getBounds());
+
+      if (gap > maxReach) {
+        continue;
+      }
+
+      let pairs = buildConnectPairs(chunkA, chunkB);
+      let pairSalt = 900 + chunkA.id * 17.3 + chunkB.id * 29.7;
+
+      for (let p = 0; p < pairs.length; p++) {
+        onThread(pairs[p], pairSalt + p * 3.17, 'connect', textSize, chunkA, chunkB);
+      }
+    }
+  }
+}
+
+function renderInteractiveThread(
+  pair,
+  layerSalt,
+  inside,
+  textSize,
+  chunkNear,
+  influenceRadius,
+  mouseInfluence,
+  activeThreadIds
+) {
+  let id = threadPhysicsId(pair[0], pair[1], layerSalt);
+  let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
+  let state = threadPhysicsMap.get(id);
+  let nearMouse = false;
+  let threadDist = Infinity;
+
+  if (chunkNear || (state && !threadPhysicsIsSettled(state, textSize))) {
+    threadDist = fastDistanceToThread(mouseX, mouseY, thread, influenceRadius);
+
+    if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.15) {
+      nearMouse = true;
+    }
+  } else if (isPerformanceMode() && mouseInfluence) {
+    let breakRadius = threadBreakRadius(textSize);
+    threadDist = fastDistanceToThread(mouseX, mouseY, thread, breakRadius);
+
+    if (threadDist <= breakRadius) {
+      mouseNearThreads = true;
+    }
+  }
+
+  let simulate = nearMouse || (state && !threadPhysicsIsSettled(state, textSize));
+
+  if (!simulate && !state) {
+    renderCurvedThread(thread, pair[0], pair[1], layerSalt);
+    return;
+  }
+
+  if (!state) {
+    state = createThreadState();
+    threadPhysicsMap.set(id, state);
+  }
+
+  activeThreadIds.add(id);
+
+  if (simulate) {
+    if (mouseInfluence && threadDist < influenceRadius && !state.broken) {
+      applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside);
+      mouseNearThreads = true;
+    }
+
+    stepThreadPhysics(state, textSize);
+  }
+
+  applyThreadPhysicsToGeometry(thread, state);
+  renderCurvedThread(thread, pair[0], pair[1], layerSalt);
 }
 
 function buildChunkInteraction(mouseInfluence) {
@@ -1279,55 +1588,34 @@ function draw() {
   let chunkInteraction = buildChunkInteraction(mouseInfluence);
 
   forEachWeaveThread((pair, layerSalt, inside, textSize, chunk) => {
-    let id = threadPhysicsId(pair[0], pair[1], layerSalt);
-    let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
-    let state = threadPhysicsMap.get(id);
     let info = chunkInteraction.get(chunk.id);
-    let influenceRadius = info.influenceRadius;
-    let chunkNear = info.chunkNear;
-    let nearMouse = false;
-    let threadDist = Infinity;
+    renderInteractiveThread(
+      pair,
+      layerSalt,
+      inside,
+      textSize,
+      info.chunkNear,
+      info.influenceRadius,
+      mouseInfluence,
+      activeThreadIds
+    );
+  });
 
-    if (chunkNear || (state && !threadPhysicsIsSettled(state, textSize))) {
-      threadDist = fastDistanceToThread(mouseX, mouseY, thread, influenceRadius);
-
-      if (chunkNear && mouseInfluence && threadDist < influenceRadius * 1.15) {
-        nearMouse = true;
-      }
-    } else if (isPerformanceMode() && mouseInfluence) {
-      let breakRadius = threadBreakRadius(textSize);
-      threadDist = fastDistanceToThread(mouseX, mouseY, thread, breakRadius);
-
-      if (threadDist <= breakRadius) {
-        mouseNearThreads = true;
-      }
-    }
-
-    let simulate = nearMouse || (state && !threadPhysicsIsSettled(state, textSize));
-
-    if (!simulate && !state) {
-      renderCurvedThread(thread, pair[0], pair[1], layerSalt);
-      return;
-    }
-
-    if (!state) {
-      state = createThreadState();
-      threadPhysicsMap.set(id, state);
-    }
-
-    activeThreadIds.add(id);
-
-    if (simulate) {
-      if (mouseInfluence && threadDist < influenceRadius && !state.broken) {
-        applyThreadMouseInfluence(state, thread, textSize, threadDist, influenceRadius, inside);
-        mouseNearThreads = true;
-      }
-
-      stepThreadPhysics(state, textSize);
-    }
-
-    applyThreadPhysicsToGeometry(thread, state);
-    renderCurvedThread(thread, pair[0], pair[1], layerSalt);
+  forEachConnectThread((pair, layerSalt, inside, textSize, chunkA, chunkB) => {
+    let infoA = chunkInteraction.get(chunkA.id);
+    let infoB = chunkInteraction.get(chunkB.id);
+    let influenceRadius = max(infoA.influenceRadius, infoB.influenceRadius) * 1.15;
+    let chunkNear = infoA.chunkNear || infoB.chunkNear;
+    renderInteractiveThread(
+      pair,
+      layerSalt,
+      inside,
+      textSize,
+      chunkNear,
+      influenceRadius,
+      mouseInfluence,
+      activeThreadIds
+    );
   });
 
   pruneThreadPhysics(activeThreadIds);
@@ -1965,7 +2253,8 @@ function copyThreadGeometry(thread) {
 }
 
 function getThreadGeometry(a, b, layerSalt, inside, textSize) {
-  let key = `${geometryRenderSalt()}|${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}|${inside ? 1 : 0}`;
+  let modeKey = inside === 'connect' ? 2 : inside ? 1 : 0;
+  let key = `${geometryRenderSalt()}|${layerSalt}|${a.x.toFixed(1)}|${a.y.toFixed(1)}|${b.x.toFixed(1)}|${b.y.toFixed(1)}|${modeKey}`;
 
   if (!threadGeometryCache.has(key)) {
     threadGeometryCache.set(key, computeThreadGeometry(a, b, layerSalt, inside, textSize));
@@ -1979,7 +2268,8 @@ function getThreadGeometry(a, b, layerSalt, inside, textSize) {
 }
 
 function sagAmountForThread(inside, textSize) {
-  return (inside ? withinThreadSag : gapsThreadSag) * textSize * SAG_AMOUNT_SCALE;
+  let sag = inside === 'connect' ? connectSag : inside ? withinThreadSag : gapsThreadSag;
+  return sag * textSize * SAG_AMOUNT_SCALE;
 }
 
 function threadPhysicsId(a, b, layerSalt) {
@@ -2066,7 +2356,7 @@ function applyThreadMouseInfluence(state, thread, textSize, threadDist, influenc
   }
 
   let influence = sq(1 - threadDist / influenceRadius);
-  let looseness = inside ? 0.9 : 1.25;
+  let looseness = inside === true ? 0.9 : 1.25;
   let sagPull = influence * THREAD_PHYSICS.mouseSagStrength * textSize * 0.13 * looseness;
 
   state.velSag += sagPull * 0.24 + mouseVelY * influence * THREAD_PHYSICS.impulseStrength * 0.08;
@@ -2093,10 +2383,11 @@ function applyThreadPhysicsToGeometry(thread, state) {
 }
 
 function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
-  let jitterScale = isCalligraphyModality() ? 0.028 : 0.018;
+  let isConnect = inside === 'connect';
+  let jitterScale = isCalligraphyModality() ? 0.028 : isConnect ? 0.022 : 0.018;
   let jitterAmt = edgeJitter * textSize * jitterScale;
   let sagAmt = sagAmountForThread(inside, textSize);
-  if (isCalligraphyModality()) {
+  if (isCalligraphyModality() && !isConnect) {
     sagAmt *= 0.55;
   }
 
@@ -2119,20 +2410,28 @@ function computeThreadGeometry(a, b, layerSalt, inside, textSize) {
   let midY = (start.y + end.y) / 2;
   let perpX = -ny;
   let perpY = nx;
-  let sway = (threadRandom(midX, midY, layerSalt + 7.4) - 0.5) * jitterAmt * (isCalligraphyModality() ? 1.25 : 0.8);
+  let swayScale = isConnect ? 1.05 : isCalligraphyModality() ? 1.25 : 0.8;
+  let sway = (threadRandom(midX, midY, layerSalt + 7.4) - 0.5) * jitterAmt * swayScale;
   let droop = sagAmt * (0.35 + threadRandom(midX, midY, layerSalt + 8.2) * 0.65);
+  if (isConnect) {
+    droop += len * 0.04 * (0.4 + threadRandom(midX, midY, layerSalt + 8.9) * 0.8);
+  }
+
+  let lengthFactor = isConnect ? abs(dx) * 0.02 + abs(dy) * 0.01 : abs(dx) * (isCalligraphyModality() ? 0.012 : 0.03);
 
   return {
     start,
     ctrl: {
       x: midX + perpX * sway,
-      y: midY + droop + abs(dx) * (isCalligraphyModality() ? 0.012 : 0.03),
+      y: midY + droop + lengthFactor,
     },
     end,
-    weight: strokeW * (0.55 + threadRandom(a.x, a.y, layerSalt + 9.3) * 0.9),
+    weight: strokeW * (isConnect ? 0.7 : 0.55) + strokeW * threadRandom(a.x, a.y, layerSalt + 9.3) * (isConnect ? 0.75 : 0.9),
     alpha: isCalligraphyModality()
       ? 70 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 130)
-      : 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160),
+      : isConnect
+        ? 110 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 130)
+        : 95 + floor(threadRandom(b.x, b.y, layerSalt + 11.5) * 160),
   };
 }
 
@@ -2212,6 +2511,11 @@ function collectSvgPaths() {
     paths.push(threadToSvgPath(thread, threadStrokeHex(pair[0], pair[1], layerSalt)));
   });
 
+  forEachConnectThread((pair, layerSalt, inside, textSize) => {
+    let thread = getThreadGeometry(pair[0], pair[1], layerSalt, inside, textSize);
+    paths.push(threadToSvgPath(thread, threadStrokeHex(pair[0], pair[1], layerSalt)));
+  });
+
   return paths;
 }
 
@@ -2270,6 +2574,12 @@ function captureCurrentSettings() {
     edgeJitter,
     withinThreadSag,
     gapsThreadSag,
+    connectEnabled,
+    connectDensity,
+    connectCount,
+    connectMaxDist,
+    connectMinDist,
+    connectSag,
     colorMode,
     chineseFontStyle,
     renderModality,
@@ -2292,6 +2602,12 @@ function applySettingsFromSnapshot(settings) {
   edgeJitter = settings.edgeJitter;
   withinThreadSag = settings.withinThreadSag;
   gapsThreadSag = settings.gapsThreadSag;
+  connectEnabled = settings.connectEnabled === true;
+  connectDensity = settings.connectDensity ?? connectDensity;
+  connectCount = settings.connectCount ?? connectCount;
+  connectMaxDist = settings.connectMaxDist ?? connectMaxDist;
+  connectMinDist = settings.connectMinDist ?? connectMinDist;
+  connectSag = settings.connectSag ?? connectSag;
   colorMode = settings.colorMode;
   backgroundColor = settings.backgroundColor;
   paletteColors = [...settings.paletteColors];
@@ -2308,6 +2624,11 @@ function applySettingsFromSnapshot(settings) {
   setSliderControl('jitter-slider', 'jitter-value', edgeJitter, edgeJitter.toFixed(2));
   setSliderControl('within-sag-slider', 'within-sag-value', withinThreadSag, withinThreadSag.toFixed(2));
   setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
+  setSliderControl('connect-density-slider', 'connect-density-value', connectDensity, connectDensity.toFixed(2));
+  setSliderControl('connect-count-slider', 'connect-count-value', connectCount, String(Math.round(connectCount)));
+  setSliderControl('connect-max-dist-slider', 'connect-max-dist-value', connectMaxDist, connectMaxDist.toFixed(2));
+  setSliderControl('connect-min-dist-slider', 'connect-min-dist-value', connectMinDist, connectMinDist.toFixed(2));
+  setSliderControl('connect-sag-slider', 'connect-sag-value', connectSag, connectSag.toFixed(2));
 
   select('#color-mode').value(colorMode);
   setChineseFontStyle(settings.chineseFontStyle || 'sans');
@@ -2319,6 +2640,7 @@ function applySettingsFromSnapshot(settings) {
   renderModality = settings.renderModality === 'calligraphy' ? 'calligraphy' : 'weave';
   calligraphyPresetBackup = null;
   updateRenderModalityUI();
+  updateConnectUI();
   loadBackgroundImageFromDataUrl(settings.backgroundImageDataUrl || null);
   syncCanvasMetrics();
   syncAllRangeSliderFills();
