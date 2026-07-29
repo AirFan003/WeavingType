@@ -170,7 +170,7 @@
             <button type="button" id="connect-off" class="mode-btn is-active">Off</button>
             <button type="button" id="connect-on" class="mode-btn">On</button>
           </div>
-          <p class="hint">Bridge threads between separate words so they latch and interweave, even across different text brackets.</p>
+          <p class="hint">Bridge threads between separate words and characters (up to 4) so they latch and interweave.</p>
           <div id="connect-controls" class="connect-controls is-disabled">
             <div class="control-row">
               <label for="connect-density-slider">Connect density</label>
@@ -184,6 +184,13 @@
               <div class="control-input">
                 <input id="connect-count-slider" type="range" min="1" max="60" step="1" value="14" />
                 <span id="connect-count-value" class="control-value">14</span>
+              </div>
+            </div>
+            <div class="control-row">
+              <label for="connect-max-units-slider">Max characters</label>
+              <div class="control-input">
+                <input id="connect-max-units-slider" type="range" min="2" max="4" step="1" value="4" />
+                <span id="connect-max-units-value" class="control-value">4</span>
               </div>
             </div>
             <div class="control-row">

@@ -45,6 +45,7 @@ let gapsThreadSag = 0.5;
 let connectEnabled = false;
 let connectDensity = 0.45;
 let connectCount = 14;
+let connectMaxUnits = 4;
 let connectMaxDist = 10;
 let connectMinDist = 0.18;
 let connectSag = 1.1;
@@ -453,6 +454,10 @@ function bindControls() {
     connectCount = Math.round(v);
     connectPairCache.clear();
   });
+  bindSlider('connect-max-units-slider', 'connect-max-units-value', (v) => {
+    connectMaxUnits = Math.round(v);
+    connectPairCache.clear();
+  });
   bindSlider('connect-max-dist-slider', 'connect-max-dist-value', (v) => {
     connectMaxDist = v;
     connectPairCache.clear();
@@ -573,6 +578,7 @@ function captureLiveControlSnapshot() {
     connectEnabled,
     connectDensity,
     connectCount,
+    connectMaxUnits,
     connectMaxDist,
     connectMinDist,
     connectSag,
@@ -599,6 +605,7 @@ function applyLiveControlSnapshot(settings, options = {}) {
   connectEnabled = settings.connectEnabled === true;
   connectDensity = settings.connectDensity ?? connectDensity;
   connectCount = settings.connectCount ?? connectCount;
+  connectMaxUnits = settings.connectMaxUnits ?? connectMaxUnits;
   connectMaxDist = settings.connectMaxDist ?? connectMaxDist;
   connectMinDist = settings.connectMinDist ?? connectMinDist;
   connectSag = settings.connectSag ?? connectSag;
@@ -620,6 +627,7 @@ function applyLiveControlSnapshot(settings, options = {}) {
   setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
   setSliderControl('connect-density-slider', 'connect-density-value', connectDensity, connectDensity.toFixed(2));
   setSliderControl('connect-count-slider', 'connect-count-value', connectCount, String(connectCount));
+  setSliderControl('connect-max-units-slider', 'connect-max-units-value', connectMaxUnits, String(connectMaxUnits));
   setSliderControl('connect-max-dist-slider', 'connect-max-dist-value', connectMaxDist, connectMaxDist.toFixed(2));
   setSliderControl('connect-min-dist-slider', 'connect-min-dist-value', connectMinDist, connectMinDist.toFixed(2));
   setSliderControl('connect-sag-slider', 'connect-sag-value', connectSag, connectSag.toFixed(2));
@@ -1101,7 +1109,9 @@ function bindSlider(sliderId, labelId, onChange) {
   let update = () => {
     let value = parseFloat(slider.value());
     label.html(
-      sliderId === 'layers-slider' || sliderId === 'connect-count-slider'
+      sliderId === 'layers-slider' ||
+      sliderId === 'connect-count-slider' ||
+      sliderId === 'connect-max-units-slider'
         ? String(Math.round(value))
         : value.toFixed(
             sliderId === 'step-slider' || sliderId === 'letter-spacing-slider' ? 3 : 2
@@ -1356,6 +1366,47 @@ function chunkSalt(chunk) {
   return abs(hash);
 }
 
+function unitSalt(unitId) {
+  let id = String(unitId || '');
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 33 + id.charCodeAt(i)) | 0;
+  }
+  return abs(hash);
+}
+
+function boundsFromPoints(points) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (let pt of points) {
+    minX = min(minX, pt.x);
+    minY = min(minY, pt.y);
+    maxX = max(maxX, pt.x);
+    maxY = max(maxY, pt.y);
+  }
+
+  if (!isFinite(minX)) {
+    return { x: 0, y: 0, w: 0, h: 0 };
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    w: max(1, maxX - minX),
+    h: max(1, maxY - minY),
+  };
+}
+
+function boundsCenter(bounds) {
+  return {
+    x: bounds.x + bounds.w * 0.5,
+    y: bounds.y + bounds.h * 0.5,
+  };
+}
+
 function subsampleConnectPoints(points, textSize) {
   if (!points || points.length === 0) {
     return [];
@@ -1372,34 +1423,77 @@ function subsampleConnectPoints(points, textSize) {
   return sampled;
 }
 
-function connectPairCacheKey(chunkA, chunkB, maxReach) {
-  let a = chunkA.getBounds();
-  let b = chunkB.getBounds();
+function collectConnectUnits() {
+  let units = [];
+
+  for (let chunk of textChunks) {
+    if (!chunk.text || !chunk.line) {
+      continue;
+    }
+
+    chunk.line.ensureRawPoints(sampleDensity);
+    let points = chunk.line.rawPoints;
+    if (!points || points.length === 0) {
+      continue;
+    }
+
+    let byChar = new Map();
+    for (let pt of points) {
+      let key = pt.charIndex;
+      if (!byChar.has(key)) {
+        byChar.set(key, []);
+      }
+      byChar.get(key).push(pt);
+    }
+
+    let textSize = chunk.textSize();
+
+    for (let [charIndex, charPoints] of byChar) {
+      if (!charPoints.length) {
+        continue;
+      }
+
+      let bounds = boundsFromPoints(charPoints);
+      units.push({
+        id: `${chunk.id}:${charIndex}`,
+        chunk,
+        charIndex,
+        points: charPoints,
+        bounds,
+        center: boundsCenter(bounds),
+        textSize,
+      });
+    }
+  }
+
+  return units;
+}
+
+function connectPairCacheKey(unitA, unitB, maxReach) {
+  let a = unitA.bounds;
+  let b = unitB.bounds;
   return (
-    `${chunkA.id}|${chunkB.id}|${sampleDensity.toFixed(3)}|${connectDensity.toFixed(3)}|` +
-    `${connectCount}|${connectMaxDist.toFixed(3)}|${connectMinDist.toFixed(3)}|${maxReach.toFixed(1)}|` +
+    `${unitA.id}|${unitB.id}|${sampleDensity.toFixed(3)}|${connectDensity.toFixed(3)}|` +
+    `${connectCount}|${connectMaxUnits}|${connectMaxDist.toFixed(3)}|${connectMinDist.toFixed(3)}|` +
+    `${maxReach.toFixed(1)}|` +
     `${a.x.toFixed(1)}|${a.y.toFixed(1)}|${a.w.toFixed(1)}|${a.h.toFixed(1)}|` +
-    `${b.x.toFixed(1)}|${b.y.toFixed(1)}|${b.w.toFixed(1)}|${b.h.toFixed(1)}|` +
-    `${chunkA.scale.toFixed(3)}|${chunkB.scale.toFixed(3)}`
+    `${b.x.toFixed(1)}|${b.y.toFixed(1)}|${b.w.toFixed(1)}|${b.h.toFixed(1)}`
   );
 }
 
-function buildConnectPairs(chunkA, chunkB, maxReach) {
-  let key = connectPairCacheKey(chunkA, chunkB, maxReach);
+function buildConnectPairsForUnits(unitA, unitB, maxReach) {
+  let key = connectPairCacheKey(unitA, unitB, maxReach);
   if (connectPairCache.has(key)) {
     return connectPairCache.get(key);
   }
 
-  chunkA.line.ensureRawPoints(sampleDensity);
-  chunkB.line.ensureRawPoints(sampleDensity);
-
-  let textSize = max(chunkA.textSize(), chunkB.textSize());
+  let textSize = max(unitA.textSize, unitB.textSize);
   let minDist = textSize * connectMinDist;
   let maxDist = maxReach;
   let minDistSq = minDist * minDist;
   let maxDistSq = maxDist * maxDist;
-  let pointsA = subsampleConnectPoints(chunkA.line.rawPoints, textSize);
-  let pointsB = subsampleConnectPoints(chunkB.line.rawPoints, textSize);
+  let pointsA = subsampleConnectPoints(unitA.points, textSize);
+  let pointsB = subsampleConnectPoints(unitB.points, textSize);
   let candidates = [];
 
   for (let i = 0; i < pointsA.length; i++) {
@@ -1458,43 +1552,59 @@ function buildConnectPairs(chunkA, chunkB, maxReach) {
 }
 
 function forEachConnectThread(onThread) {
-  if (!connectEnabled || textChunks.length < 2) {
+  if (!connectEnabled) {
+    return;
+  }
+
+  let units = collectConnectUnits();
+  if (units.length < 2) {
     return;
   }
 
   let canvasReach = dist(0, 0, width, height);
+  let neighborLimit = max(1, connectMaxUnits - 1);
+  let linked = new Set();
 
-  for (let i = 0; i < textChunks.length; i++) {
-    let chunkA = textChunks[i];
-    if (!chunkA.text || !chunkA.line) {
-      continue;
+  for (let i = 0; i < units.length; i++) {
+    let unitA = units[i];
+    let neighbors = [];
+
+    for (let j = 0; j < units.length; j++) {
+      if (i === j) {
+        continue;
+      }
+
+      let unitB = units[j];
+      let reach = max(
+        max(unitA.textSize, unitB.textSize) * connectMaxDist,
+        canvasReach * min(1, connectMaxDist / 20)
+      );
+      let gap = boundsGapDistance(unitA.bounds, unitB.bounds);
+      if (gap > reach) {
+        continue;
+      }
+
+      let centerDist = dist(unitA.center.x, unitA.center.y, unitB.center.x, unitB.center.y);
+      neighbors.push({ unit: unitB, gap, centerDist, reach });
     }
 
-    let boundsA = chunkA.getBounds();
-    let sizeA = chunkA.textSize();
+    neighbors.sort((left, right) => left.centerDist - right.centerDist);
+    neighbors = neighbors.slice(0, neighborLimit);
 
-    for (let j = i + 1; j < textChunks.length; j++) {
-      let chunkB = textChunks[j];
-      if (!chunkB.text || !chunkB.line) {
+    for (let entry of neighbors) {
+      let unitB = entry.unit;
+      let pairKey = unitA.id < unitB.id ? `${unitA.id}::${unitB.id}` : `${unitB.id}::${unitA.id}`;
+      if (linked.has(pairKey)) {
         continue;
       }
+      linked.add(pairKey);
 
-      let sizeB = chunkB.textSize();
-      let textSize = max(sizeA, sizeB);
-      // Reach spans the poster: text-size multiplier, floored by a canvas fraction so
-      // distant words still bridge even when letter size is small.
-      let maxReach = max(textSize * connectMaxDist, canvasReach * min(1, connectMaxDist / 20));
-      let gap = boundsGapDistance(boundsA, chunkB.getBounds());
-
-      if (gap > maxReach) {
-        continue;
-      }
-
-      let pairs = buildConnectPairs(chunkA, chunkB, maxReach);
-      let pairSalt = 900 + chunkSalt(chunkA) * 17.3 + chunkSalt(chunkB) * 29.7;
+      let textSize = max(unitA.textSize, unitB.textSize);
+      let pairs = buildConnectPairsForUnits(unitA, unitB, entry.reach);
+      let pairSalt = 900 + unitSalt(unitA.id) * 0.17 + unitSalt(unitB.id) * 0.29;
 
       for (let p = 0; p < pairs.length; p++) {
-        onThread(pairs[p], pairSalt + p * 3.17, 'connect', textSize, chunkA, chunkB);
+        onThread(pairs[p], pairSalt + p * 3.17, 'connect', textSize, unitA.chunk, unitB.chunk);
       }
     }
   }
@@ -2602,6 +2712,7 @@ function captureCurrentSettings() {
     connectEnabled,
     connectDensity,
     connectCount,
+    connectMaxUnits,
     connectMaxDist,
     connectMinDist,
     connectSag,
@@ -2630,6 +2741,7 @@ function applySettingsFromSnapshot(settings) {
   connectEnabled = settings.connectEnabled === true;
   connectDensity = settings.connectDensity ?? connectDensity;
   connectCount = settings.connectCount ?? connectCount;
+  connectMaxUnits = settings.connectMaxUnits ?? connectMaxUnits;
   connectMaxDist = settings.connectMaxDist ?? connectMaxDist;
   connectMinDist = settings.connectMinDist ?? connectMinDist;
   connectSag = settings.connectSag ?? connectSag;
@@ -2651,6 +2763,7 @@ function applySettingsFromSnapshot(settings) {
   setSliderControl('gaps-sag-slider', 'gaps-sag-value', gapsThreadSag, gapsThreadSag.toFixed(2));
   setSliderControl('connect-density-slider', 'connect-density-value', connectDensity, connectDensity.toFixed(2));
   setSliderControl('connect-count-slider', 'connect-count-value', connectCount, String(Math.round(connectCount)));
+  setSliderControl('connect-max-units-slider', 'connect-max-units-value', connectMaxUnits, String(Math.round(connectMaxUnits)));
   setSliderControl('connect-max-dist-slider', 'connect-max-dist-value', connectMaxDist, connectMaxDist.toFixed(2));
   setSliderControl('connect-min-dist-slider', 'connect-min-dist-value', connectMinDist, connectMinDist.toFixed(2));
   setSliderControl('connect-sag-slider', 'connect-sag-value', connectSag, connectSag.toFixed(2));
