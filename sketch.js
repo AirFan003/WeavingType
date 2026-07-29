@@ -100,11 +100,25 @@ const FONT_ENGLISH =
   'https://cdn.jsdelivr.net/gh/adobe-fonts/source-serif@release/VAR/SourceSerif4Variable-Roman.ttf';
 const CHINESE_FONT_STYLES = {
   sans: {
-    label: 'Noto Sans · Modern',
+    label: 'Noto Sans · Simplified',
     cssFamily: 'Noto Sans SC',
     subset:
       'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@5.2.5/chinese-simplified-700-normal.woff',
     full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf',
+  },
+  'sans-tc': {
+    label: 'Noto Sans · Traditional',
+    cssFamily: 'Noto Sans TC',
+    subset:
+      'https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-tc@5.2.5/chinese-traditional-700-normal.woff',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf',
+  },
+  xing: {
+    label: '芝麻行 · Zhi Mang Xing',
+    cssFamily: 'Zhi Mang Xing',
+    // Full Google Fonts face (not the simplified-only Fontsource subset).
+    subset: 'https://fonts.gstatic.com/s/zhimangxing/v19/f0Xw0ey79sErYFtWQ9a2rq-g0ac.ttf',
+    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/zhimangxing/ZhiMangXing-Regular.ttf',
   },
   kai: {
     label: '马善政 · Regular script',
@@ -112,13 +126,6 @@ const CHINESE_FONT_STYLES = {
     subset:
       'https://cdn.jsdelivr.net/fontsource/fonts/ma-shan-zheng@5.2.5/chinese-simplified-400-normal.woff',
     full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/mashanzheng/MaShanZheng-Regular.ttf',
-  },
-  xing: {
-    label: '芝麻行 · Running script',
-    cssFamily: 'Zhi Mang Xing',
-    subset:
-      'https://cdn.jsdelivr.net/fontsource/fonts/zhi-mang-xing@5.2.5/chinese-simplified-400-normal.woff',
-    full: 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/zhimangxing/ZhiMangXing-Regular.ttf',
   },
   cao: {
     label: '刘健毛草 · Cursive',
