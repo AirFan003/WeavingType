@@ -55,6 +55,7 @@ const SAG_AMOUNT_SCALE = 0.06;
 let letterSpacing = 0.065;
 let colorMode = 'monotone';
 let backgroundColor = '#0c0b0a';
+let transparentBackground = false;
 let backgroundImage = null;
 let backgroundImageDataUrl = null;
 let paletteColors = ['#e8dcc8', '#c45c3e', '#6b8f71'];
@@ -585,6 +586,7 @@ function captureLiveControlSnapshot() {
     colorMode,
     chineseFontStyle,
     backgroundColor,
+    transparentBackground,
     paletteColors: [...paletteColors],
   };
 }
@@ -611,6 +613,9 @@ function applyLiveControlSnapshot(settings, options = {}) {
   connectSag = settings.connectSag ?? connectSag;
   colorMode = settings.colorMode;
   backgroundColor = settings.backgroundColor;
+  if (settings.transparentBackground !== undefined) {
+    transparentBackground = settings.transparentBackground === true;
+  }
   paletteColors = [...settings.paletteColors];
 
   setSliderControl('letter-size-slider', 'letter-size-value', letterSizeScale, letterSizeScale.toFixed(2));
@@ -639,6 +644,7 @@ function applyLiveControlSnapshot(settings, options = {}) {
   select('#color-2').value(paletteColors[1]);
   select('#color-3').value(paletteColors[2]);
   updateColorControlVisibility();
+  updateTransparentBackgroundUI();
 
   if (options.syncFont !== false) {
     setChineseFontStyle(settings.chineseFontStyle || 'sans');
@@ -820,6 +826,53 @@ function bindColorControls() {
     });
     paletteColors[index] = picker.value();
   }
+
+  bindTransparentBackgroundControls();
+}
+
+function bindTransparentBackgroundControls() {
+  select('#transparent-bg-off').mousePressed(() => setTransparentBackground(false));
+  select('#transparent-bg-on').mousePressed(() => setTransparentBackground(true));
+  updateTransparentBackgroundUI();
+}
+
+function setTransparentBackground(enabled) {
+  transparentBackground = Boolean(enabled);
+  updateTransparentBackgroundUI();
+}
+
+function updateTransparentBackgroundUI() {
+  let offBtn = select('#transparent-bg-off');
+  let onBtn = select('#transparent-bg-on');
+  let frame = document.getElementById('a4-frame');
+  let bgColorRow = select('#bg-color')?.elt?.closest('.control-row');
+  let bgImageRow = select('#bg-image-input')?.elt?.closest('.control-row');
+
+  if (transparentBackground) {
+    offBtn.removeClass('is-active');
+    onBtn.addClass('is-active');
+    if (frame) {
+      frame.classList.add('is-transparent');
+    }
+    if (bgColorRow) {
+      bgColorRow.classList.add('is-muted');
+    }
+    if (bgImageRow) {
+      bgImageRow.classList.add('is-muted');
+    }
+  } else {
+    onBtn.removeClass('is-active');
+    offBtn.addClass('is-active');
+    if (frame) {
+      frame.classList.remove('is-transparent');
+    }
+    if (bgColorRow) {
+      bgColorRow.classList.remove('is-muted');
+    }
+    if (bgImageRow) {
+      bgImageRow.classList.remove('is-muted');
+    }
+  }
 }
 
 function bindBackgroundImageControls() {
@@ -952,6 +1005,11 @@ function getBackgroundImageCoverRect(imgW, imgH) {
 }
 
 function drawCanvasBackground() {
+  if (transparentBackground) {
+    clear();
+    return;
+  }
+
   let bg = hexToRgb(backgroundColor);
   background(bg.r, bg.g, bg.b);
 
@@ -2654,20 +2712,6 @@ function collectSvgPaths() {
   return paths;
 }
 
-function buildSvgDocument() {
-  let underlay = collectSvgCalligraphyUnderlay();
-  let paths = collectSvgPaths();
-  let body = [...underlay, ...paths].join('\n  ');
-
-  return (
-    '<?xml version="1.0" encoding="UTF-8"?>\n' +
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
-    `${buildSvgBackgroundMarkup()}\n` +
-    `  ${body}\n` +
-    '</svg>'
-  );
-}
-
 function makeExportBasename() {
   let slug = textChunks
     .map((chunk) => chunk.text.trim())
@@ -2720,6 +2764,7 @@ function captureCurrentSettings() {
     chineseFontStyle,
     renderModality,
     backgroundColor,
+    transparentBackground,
     backgroundImageDataUrl,
     paletteColors: [...paletteColors],
   };
@@ -2747,6 +2792,7 @@ function applySettingsFromSnapshot(settings) {
   connectSag = settings.connectSag ?? connectSag;
   colorMode = settings.colorMode;
   backgroundColor = settings.backgroundColor;
+  transparentBackground = settings.transparentBackground === true;
   paletteColors = [...settings.paletteColors];
 
   setSliderControl('letter-size-slider', 'letter-size-value', letterSizeScale, letterSizeScale.toFixed(2));
@@ -2775,6 +2821,7 @@ function applySettingsFromSnapshot(settings) {
   select('#color-2').value(paletteColors[1]);
   select('#color-3').value(paletteColors[2]);
   updateColorControlVisibility();
+  updateTransparentBackgroundUI();
   renderModality = settings.renderModality === 'calligraphy' ? 'calligraphy' : 'weave';
   calligraphyPresetBackup = null;
   updateRenderModalityUI();
@@ -2988,10 +3035,42 @@ function downloadPng() {
     return;
   }
 
-  saveCanvas(makeExportBasename(), 'png');
+  let canvasEl = getRecordCanvasElement();
+  if (!canvasEl) {
+    saveCanvas(makeExportBasename(), 'png');
+    return;
+  }
+
+  let dataUrl = canvasEl.toDataURL('image/png');
+  let anchor = document.createElement('a');
+  anchor.href = dataUrl;
+  anchor.download = `${makeExportBasename()}.png`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+}
+
+function buildSvgDocument() {
+  let underlay = collectSvgCalligraphyUnderlay();
+  let paths = collectSvgPaths();
+  let backgroundMarkup = buildSvgBackgroundMarkup();
+  let body = [...underlay, ...paths].join('\n  ');
+  let backgroundBlock = backgroundMarkup ? `${backgroundMarkup}\n` : '';
+
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
+    `${backgroundBlock}` +
+    `  ${body}\n` +
+    '</svg>'
+  );
 }
 
 function buildSvgBackgroundMarkup() {
+  if (transparentBackground) {
+    return '';
+  }
+
   let markup = `  <rect width="100%" height="100%" fill="${backgroundColor}"/>`;
 
   if (backgroundImage && backgroundImageDataUrl) {

@@ -254,6 +254,16 @@
             </div>
           </div>
           <div class="control-row">
+            <label for="transparent-bg">Transparent background</label>
+            <div class="control-input">
+              <div class="mode-toggle bg-transparency-toggle">
+                <button type="button" id="transparent-bg-off" class="mode-btn is-active">Off</button>
+                <button type="button" id="transparent-bg-on" class="mode-btn">On</button>
+              </div>
+            </div>
+            <p class="hint">When on, PNG and SVG exports keep an alpha channel with no filled background.</p>
+          </div>
+          <div class="control-row">
             <label for="bg-image-input">Background image</label>
             <div class="control-input bg-image-controls">
               <input id="bg-image-input" type="file" accept="image/*" hidden />

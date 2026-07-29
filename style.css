@@ -603,6 +603,15 @@ input[type='color']:hover {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
+.bg-transparency-toggle {
+  width: 100%;
+}
+
+.control-row.is-muted {
+  opacity: 0.42;
+  pointer-events: none;
+}
+
 #a4-frame {
   position: relative;
   box-shadow:
@@ -612,10 +621,22 @@ input[type='color']:hover {
   border-radius: 2px;
 }
 
+#a4-frame.is-transparent {
+  background-color: #1a1816;
+  background-image:
+    linear-gradient(45deg, #2a2622 25%, transparent 25%),
+    linear-gradient(-45deg, #2a2622 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #2a2622 75%),
+    linear-gradient(-45deg, transparent 75%, #2a2622 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
 #a4-frame canvas {
   display: block;
   cursor: text;
   border-radius: 2px;
+  background: transparent;
 }
 
 @media (max-width: 900px) {
