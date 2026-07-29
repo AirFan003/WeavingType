@@ -45,7 +45,7 @@ let gapsThreadSag = 0.5;
 let connectEnabled = false;
 let connectDensity = 0.45;
 let connectCount = 14;
-let connectMaxDist = 1.35;
+let connectMaxDist = 10;
 let connectMinDist = 0.18;
 let connectSag = 1.1;
 let connectPairCache = new Map();
@@ -1335,6 +1335,20 @@ function boundsGapDistance(a, b) {
   return sqrt(dx * dx + dy * dy);
 }
 
+function chunkSalt(chunk) {
+  let id = String(chunk && chunk.id != null ? chunk.id : '');
+  let match = id.match(/(\d+)$/);
+  if (match) {
+    return Number(match[1]);
+  }
+
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  return abs(hash);
+}
+
 function subsampleConnectPoints(points, textSize) {
   if (!points || points.length === 0) {
     return [];
@@ -1351,20 +1365,20 @@ function subsampleConnectPoints(points, textSize) {
   return sampled;
 }
 
-function connectPairCacheKey(chunkA, chunkB) {
+function connectPairCacheKey(chunkA, chunkB, maxReach) {
   let a = chunkA.getBounds();
   let b = chunkB.getBounds();
   return (
     `${chunkA.id}|${chunkB.id}|${sampleDensity.toFixed(3)}|${connectDensity.toFixed(3)}|` +
-    `${connectCount}|${connectMaxDist.toFixed(3)}|${connectMinDist.toFixed(3)}|` +
+    `${connectCount}|${connectMaxDist.toFixed(3)}|${connectMinDist.toFixed(3)}|${maxReach.toFixed(1)}|` +
     `${a.x.toFixed(1)}|${a.y.toFixed(1)}|${a.w.toFixed(1)}|${a.h.toFixed(1)}|` +
     `${b.x.toFixed(1)}|${b.y.toFixed(1)}|${b.w.toFixed(1)}|${b.h.toFixed(1)}|` +
     `${chunkA.scale.toFixed(3)}|${chunkB.scale.toFixed(3)}`
   );
 }
 
-function buildConnectPairs(chunkA, chunkB) {
-  let key = connectPairCacheKey(chunkA, chunkB);
+function buildConnectPairs(chunkA, chunkB, maxReach) {
+  let key = connectPairCacheKey(chunkA, chunkB, maxReach);
   if (connectPairCache.has(key)) {
     return connectPairCache.get(key);
   }
@@ -1374,7 +1388,7 @@ function buildConnectPairs(chunkA, chunkB) {
 
   let textSize = max(chunkA.textSize(), chunkB.textSize());
   let minDist = textSize * connectMinDist;
-  let maxDist = textSize * connectMaxDist;
+  let maxDist = maxReach;
   let minDistSq = minDist * minDist;
   let maxDistSq = maxDist * maxDist;
   let pointsA = subsampleConnectPoints(chunkA.line.rawPoints, textSize);
@@ -1441,6 +1455,8 @@ function forEachConnectThread(onThread) {
     return;
   }
 
+  let canvasReach = dist(0, 0, width, height);
+
   for (let i = 0; i < textChunks.length; i++) {
     let chunkA = textChunks[i];
     if (!chunkA.text || !chunkA.line) {
@@ -1458,15 +1474,17 @@ function forEachConnectThread(onThread) {
 
       let sizeB = chunkB.textSize();
       let textSize = max(sizeA, sizeB);
-      let maxReach = textSize * connectMaxDist;
+      // Reach spans the poster: text-size multiplier, floored by a canvas fraction so
+      // distant words still bridge even when letter size is small.
+      let maxReach = max(textSize * connectMaxDist, canvasReach * min(1, connectMaxDist / 20));
       let gap = boundsGapDistance(boundsA, chunkB.getBounds());
 
       if (gap > maxReach) {
         continue;
       }
 
-      let pairs = buildConnectPairs(chunkA, chunkB);
-      let pairSalt = 900 + chunkA.id * 17.3 + chunkB.id * 29.7;
+      let pairs = buildConnectPairs(chunkA, chunkB, maxReach);
+      let pairSalt = 900 + chunkSalt(chunkA) * 17.3 + chunkSalt(chunkB) * 29.7;
 
       for (let p = 0; p < pairs.length; p++) {
         onThread(pairs[p], pairSalt + p * 3.17, 'connect', textSize, chunkA, chunkB);
